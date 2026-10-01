@@ -1,4 +1,4 @@
-// Standalone HIL firmware. Results travel in a DMX frame because UART0 is
+// Standalone HIL firmware (extras). Results travel in a DMX frame because UART0 is
 // occupied by the protocol under test. Never use this on a show/live fixture:
 // it changes the RP2040 fixture address to 43, restores 42 and toggles Identify.
 #include <NocteDMX.h>

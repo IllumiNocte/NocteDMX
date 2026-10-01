@@ -82,4 +82,4 @@ jobs:
               --warnings all \
               "$sketch"
             echo "::endgroup::"
-          done < <(find examples tests/hil -name '*.ino' -print | sort)
+          done < <(find examples extras/hil -name '*.ino' -print | sort)

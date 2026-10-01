@@ -1,4 +1,4 @@
-// Receive a known fixture pattern, then echo it as DMX after the sender stops.
+// HIL: receive a fixture pattern, then echo it as DMX after the sender stops.
 #include <NocteDMX.h>
 
 #ifndef NOCTE_HIL_DIRECTION_PIN

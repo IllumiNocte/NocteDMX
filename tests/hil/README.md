@@ -3,6 +3,8 @@
 These tests use NocteDMX directly. They do not need uNode, Wi-Fi, a Raspberry
 Pi host, Node-RED or a web API. GitHub CI compiles the test firmware, but the
 physical tests run locally.
+Firmware sketches live in `extras/hil`, as required by the Arduino library
+layout. The host runner and its dependencies remain in `tests/hil`.
 
 ## Hardware
 

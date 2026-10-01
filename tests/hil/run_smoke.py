@@ -114,7 +114,7 @@ def test_output(args, fixture):
 
 
 def test_input(args, fixture):
-    build_and_flash(args, fixture, "tests/hil/DmxInputSmoke")
+    build_and_flash(args, fixture, "extras/hil/DmxInputSmoke")
     values = [(i * 17 + 3) & 255 for i in range(512)]
     fixture.command(cmd="set", target="frame", slots=512, values=values)
     fixture.command(cmd="tx", action="start")
@@ -126,7 +126,7 @@ def test_input(args, fixture):
 
 
 def test_rdm(args, fixture):
-    build_and_flash(args, fixture, "tests/hil/ControllerSmoke")
+    build_and_flash(args, fixture, "extras/hil/ControllerSmoke")
     fixture.command(cmd="rdm", action="defaults")
     fixture.command(cmd="rdm", action="configure", uid="7FF0:52444D01",
                     deviceLabel="NocteDMX HIL", startAddress=42, footprint=16, responseDelayUs=500)
