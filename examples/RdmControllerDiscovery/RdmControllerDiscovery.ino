@@ -34,10 +34,15 @@ UID found(0,0,0,0,0,0);
 
 nocte::dmx::Port& dmx = nocte::dmx::defaultPort();
 
+// ESP8266 wiring:
+//   UART0 TX (GPIO1) -> RS-485 DI
+//   UART0 RX (GPIO3) <- RS-485 RO
+//   GPIO5           -> RS-485 DE and active-low /RE tied together
+//
 // By default DE and active-low /RE are tied to DIRECTION_PIN.
 // Define RDM_SEPARATE_DIRECTION_PINS to exercise independently controlled
 // transceiver pins instead.
-#define DIRECTION_PIN 4
+#define DIRECTION_PIN 5
 #define DRIVER_ENABLE_PIN 4
 #define RECEIVER_ENABLE_NOT_PIN 5
 #define DISC_STATE_SEARCH 0
@@ -153,12 +158,18 @@ uint8_t checkNextRange() {
         checkDeviceFound(lower);
       } else {        //not leaf so, check range lower->upper
         uint8_t result = dmx.sendRDMDiscoveryPacket(lower, upper, &found);
-        if ( result ) {
+        if ( result == RDM_DID_DISCOVER ) {
+          checkDeviceFound(found);
+        } else if ( result == RDM_PARTIAL_DISCOVERY ) {
           //this range responded, so divide into sub ranges push them on stack to be further checked
           pushActiveBranch(lower, upper);
-           
-        } else if ( dmx.sendRDMDiscoveryPacket(lower, upper, &found) ) {
+        } else {
+          result = dmx.sendRDMDiscoveryPacket(lower, upper, &found);
+          if ( result == RDM_DID_DISCOVER ) {
+            checkDeviceFound(found);
+          } else if ( result == RDM_PARTIAL_DISCOVERY ) {
             pushActiveBranch(lower, upper); //if discovery fails, try a second time
+          }
         }
       }         // end check range
       return 1; // UID ranges may be remaining to test
@@ -178,7 +189,10 @@ void testRDMDiscovery() {
       discovery_state = DISC_STATE_SEARCH;
       pushInitialBranch();
 
-      if ( identifyFlag ) {   //once per cycle identify each device
+      if ( identifyFlag && tableOfDevices.count() > 0 ) {
+        // Once per cycle identify each device. Keep the flag set while the
+        // table is still empty so newly discovered devices are exercised on
+        // the first completed table check rather than after a later wrap.
         identifyEach();       //this is just to demonstrate GET device address
         identifyFlag = 0;     //and SET identify device
       }
