@@ -191,6 +191,13 @@ void Esp32S3UartPort::stop() {
 
 bool Esp32S3UartPort::transmitFrame() {
   const uint32_t started = static_cast<uint32_t>(esp_timer_get_time());
+  // Snapshot before BREAK so channel count/copy time cannot extend MAB.
+  portENTER_CRITICAL(&lock_);
+  transmitLength_ = frames_.slots + 1;
+  for (uint16_t i = 0; i < transmitLength_; ++i) transmit_[i] = frames_.dmx[i];
+  transmit_[0] = 0;
+  transmitIndex_ = 0;
+  portEXIT_CRITICAL(&lock_);
   // At MARK/idle, inverting the UART's idle TX signal produces a real BREAK
   // without switching baud rate or emitting a dummy channel/start code.
   uart_ll_inverse_signal(hardware_, UART_SIGNAL_TXD_INV);
@@ -198,10 +205,6 @@ bool Esp32S3UartPort::transmitFrame() {
   uart_ll_inverse_signal(hardware_, 0);
   delayMicroseconds(kTxMabUs);
   portENTER_CRITICAL(&lock_);
-  transmitLength_ = frames_.slots + 1;
-  for (uint16_t i = 0; i < transmitLength_; ++i) transmit_[i] = frames_.dmx[i];
-  transmit_[0] = 0;
-  transmitIndex_ = 0;
   fillTxFifo();
   portEXIT_CRITICAL(&lock_);
   for (;;) {

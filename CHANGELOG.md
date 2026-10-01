@@ -2,6 +2,13 @@
 
 ## 0.1.0 - Unreleased
 
+- Hardware-smoke-tested ESP32-S3 UART1 against RP2040 tester 0.4.15: 15
+  input/output, invalid-start-code/BREAK, noise-recovery, console-activity and
+  lifecycle cases, including unchanged stopped-state heap after 100 cycles.
+- Moved S3 output snapshots before BREAK so full-frame copying cannot extend
+  MAB. Added full JSON snapshots/heap reports to the interactive bench and
+  a repeatable expanded hardware runner with explicit fixture coverage guards.
+- Added standalone esptool executable support with host-side dry tests.
 - Added an experimental ESP32-S3 UART1/2 backend for DMX input/output, with
   configurable pins, optional direction GPIOs, per-frame TX snapshots,
   hardware-idle completion checks and cooperative task shutdown.

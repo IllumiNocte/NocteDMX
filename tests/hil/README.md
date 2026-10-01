@@ -42,16 +42,22 @@ An ordinary Python installation with the requirements above needs neither.
 
 ## Coverage and limits
 
-### ESP32-S3 preparation
+### ESP32-S3 tested scope
 
 An experimental DMX-only path is prepared with
 `--chip esp32s3 --tests dmx` (or `output`/`input`). The default S3 build uses
 UART1 TX17/RX18 and direction pin 255 (disabled). It compiles for Arduino Core
 3.3.12 with USB CDC on boot and flashes the **merged** image at offset 0.
 Use esptool 4.x/5.x. `all` and `rdm` are rejected for S3 before opening ports.
-This path has not yet been run on S3 hardware. See [the bring-up guide](../../docs/esp32s3.md)
+This path passed on S3 UART1 with direct UART. See [the bring-up guide](../../docs/esp32s3.md)
 for crossed 3.3-V UART wiring and the dedicated interactive bench sketch.
 The ESP8266 tests/defaults remain unchanged.
+`--esptool-executable` selects a bundled standalone programmer instead of a
+Python module. The expanded `run_s3_bench.py` suite uses tester 0.4.15 or later
+and covers 15 DMX/fault/lifecycle cases; `--no-flash` reuses the bench firmware.
+See [the validation record](../../docs/esp32s3-validation.md) for measured results
+and exclusions. No S3 RDM, Wi-Fi stress, UART2 or RS-485 electrical qualification
+is claimed by these direct-UART smoke tests.
 Host-runner dry tests mock all serial/programming calls and verify image
 selection and the S3 RDM guard without Python hardware dependencies:
 

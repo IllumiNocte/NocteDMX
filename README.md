@@ -24,7 +24,8 @@ microcontroller families.
 
 The first backend is the proven ESP8266 UART0 implementation used by the
 uNode project. An experimental ESP32-S3 UART backend now provides DMX input
-and output; its first hardware qualification is still pending.
+and output, now smoke-tested on UART1 with an RP2040 fixture. Full timing and
+electrical qualification remain pending.
 
 > [!IMPORTANT]
 > NocteDMX is currently an early development release. The ESP8266 backend is
@@ -232,7 +233,7 @@ For the detailed boundary and porting sequence, see
 | Target | Status | Notes |
 | --- | --- | --- |
 | ESP8266 | Supported | UART0 input/output and bidirectional RDM |
-| ESP32-S3 | Experimental, compile-tested | UART1/2 DMX input/output; RDM and hardware qualification pending |
+| ESP32-S3 | Experimental, UART1 smoke-tested | DMX input/output; UART2, RDM and full qualification pending |
 | RP2040 / RP2350 | Roadmap | Suitable candidate for a PIO-based backend |
 | STM32 | Roadmap | Hardware-UART backend planned |
 | AVR | Exploratory | Subject to RAM and timer/UART constraints |
@@ -273,6 +274,7 @@ continues to build after each step.
 - [ ] Extract shared receive assembly and controller transaction sequencing
 - [x] Add an experimental ESP32-S3 UART backend for DMX input/output
 - [x] Add standalone RP2040 HIL tests for the ESP8266 backend
+- [x] Validate S3 UART1 DMX input/output, fault recovery and lifecycle on direct UART
 - [ ] Validate the ESP32-S3 backend against the same HIL suite
 - [ ] Bring shared RDM sequencing to ESP32-S3
 
@@ -295,9 +297,12 @@ bench connection, **not** a connection to a DMX/RS-485 line. Only one device
 should transmit during each DMX input/output test.
 
 [`Esp32S3UartBench`](extras/hil/Esp32S3UartBench/Esp32S3UartBench.ino) starts in
-input mode and accepts `input`, `output`, `stop` and `status` through USB CDC.
+input mode and accepts `input`, `output`, `output24`, `stop`, `status`, `frame`,
+`quiet` and `verbose` through USB CDC.
 See [the S3 bring-up guide](docs/esp32s3.md) for the build command, backend
 constraints and the remaining hardware tests.
+The first [S3 hardware validation record](docs/esp32s3-validation.md) documents
+15 passing bench cases and the measured scope, without claiming certification.
 
 ## Compatibility
 

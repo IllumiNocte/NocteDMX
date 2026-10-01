@@ -69,8 +69,11 @@ def build_and_flash(args, fixture, sketch):
         "--build-property", "compiler.cpp.extra_flags=-DNOCTE_HIL_DIRECTION_PIN=" + str(args.direction_pin),
         str(source),
     ], check=True)
-    command = [sys.executable]
-    if args.esptool_script and args.serial_module_path:
+    executable = getattr(args, "esptool_executable", None)
+    command = [executable] if executable else [sys.executable]
+    if executable:
+        pass  # Standalone vendor executable already bundles Python/serial.
+    elif args.esptool_script and args.serial_module_path:
         # The isolated Python bundled with Arduino ignores PYTHONPATH.
         command += ["-c", "import sys, runpy; sys.path.insert(0, "
                     + repr(args.serial_module_path) + "); sys.argv=sys.argv[1:]; "
@@ -194,7 +197,9 @@ def main():
     parser.add_argument("--esp-port", required=True)
     parser.add_argument("--fixture-port", required=True)
     parser.add_argument("--arduino-cli", default="arduino-cli")
-    parser.add_argument("--esptool-script", help="Optional path to a bundled esptool.py")
+    programmer = parser.add_mutually_exclusive_group()
+    programmer.add_argument("--esptool-script", help="Optional path to a bundled esptool.py")
+    programmer.add_argument("--esptool-executable", help="Optional standalone esptool executable")
     parser.add_argument("--serial-module-path", help="pyserial directory for isolated Arduino Python")
     parser.add_argument("--chip", choices=("esp8266", "esp32s3"), default="esp8266")
     parser.add_argument("--fqbn", help="Override the chip-specific board definition")

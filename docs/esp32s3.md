@@ -1,7 +1,8 @@
 # ESP32-S3 UART bring-up
 
-This is an **experimental, compile-tested DMX input/output backend**. No S3
-hardware test or standards-conformance claim accompanies this milestone.
+This is an **experimental, UART1 smoke-tested DMX input/output backend**.
+The [first hardware validation](esp32s3-validation.md) covers 15 cases with
+direct UART. It is not a standards-conformance or electrical qualification.
 RDM is deliberately unavailable (`Port::supportsRdm == false`) until the DMX
 transport and shared RDM sequencing have been qualified.
 
@@ -43,13 +44,17 @@ The bench starts as a receiver. Send newline-terminated commands over USB:
 - `input`: receive DMX on GPIO18 and report the last complete frame.
 - `output`: transmit 512 channels on GPIO17, `(channelIndex * 17 + 3) & 255`
   with zero-based channel index, at nominal 40 Hz.
+- `output24`: the same pattern with 24 channels.
 - `stop`: release the UART and stop traffic.
-- `status`: report active state, setup error, slot count and error counters.
+- `status`: report mode, active state, setup error, slot count, error counters
+  and free heap.
+- `frame`: return a JSON snapshot of all received channels.
+- `quiet` / `verbose`: disable/enable automatic receive reports.
 
 The RX callback only signals frame availability. Reporting and snapshots run
 in foreground context, not in the ISR.
 
-## Prepared automatic hardware tests
+## Automatic hardware tests
 
 The host runner can build and **flash** DMX smoke sketches for S3:
 
@@ -64,8 +69,25 @@ image at offset 0, including bootloader/partition table; it does not incorrectly
 write the application-only image there. Native USB can re-enumerate when
 switching between bootloader and firmware; use the board's USB-UART bridge if
 necessary for a stable programming port. The standalone interactive bench is
-an alternative for first bring-up. The S3 smoke path is prepared but untested
-on hardware; `--tests all`/`rdm` are rejected before touching serial ports.
+an alternative for first bring-up. S3 input/output have passed with this path;
+`--tests all`/`rdm` are rejected before touching serial ports.
+`--esptool-executable` can select the vendor's standalone executable without
+installing another Python esptool package.
+
+Run the expanded bench suite with tester firmware **0.4.15 or later**:
+
+```sh
+python tests/hil/run_s3_bench.py --esp-port S3_SERIAL_PORT \
+  --fixture-port RP2040_SERIAL_PORT
+```
+
+This builds/flashes the interactive bench, tests receive slot counts, legal
+channel pauses, invalid start codes/BREAKs, noise recovery, full output,
+console activity and 100 lifecycle cycles. `--no-flash` uses the already loaded
+bench. The tester is returned to idle/normal timing and the S3 to input/verbose.
+Tester 0.4.14 overwrites configured start codes before sending; the runner
+checks what the fixture actually sends. `--skip-start-code` explicitly records
+that coverage gap instead of treating it as a successful rejection test.
 
 ## Backend contract and limitations
 
@@ -79,7 +101,8 @@ on hardware; `--tests all`/`rdm` are rejected before touching serial ports.
 - Start allocates the output task; no steady-state data-path allocation.
 - Output uses 250000 baud, 8N2, nominal 176-us BREAK and 16-us MAB, default
   40 Hz (configurable 1..44 Hz). A dedicated TX snapshot keeps updates from
-  changing a partly transmitted frame. Hardware-idle plus all queued bytes
+  changing a partly transmitted frame and is copied **before BREAK**, so its
+  length does not extend MAB. Hardware-idle plus all queued bytes
   determines completion, not merely FIFO empty.
 - Receive uses UART byte/error interrupts and GPIO edges to qualify a BREAK
   low period of at least 88 us. This initial GPIO-edge approach adds CPU load

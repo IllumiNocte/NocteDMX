@@ -1,6 +1,6 @@
 // Direct 3.3-V UART bench: S3 GPIO17 TX -> RP2040 GPIO1 RX,
 // S3 GPIO18 RX <- RP2040 GPIO0 TX; common GND, no RE/DE or RS485.
-// Build with USB CDC on boot enabled. Console commands: input/output/stop/status.
+// USB CDC commands: input/output/output24/stop/status/frame/quiet/verbose.
 #include <NocteDMX.h>
 
 namespace {
@@ -11,29 +11,43 @@ uint8_t commandLength = 0;
 bool discardCommand = false;
 uint8_t pattern[512] = {};
 uint8_t received[512] = {};
+bool reportFrames = true;
+const char* mode = "input";
 
 void NOCTE_DMX_ISR_ATTR onFrame(int) { available.store(true); }
 
 void status() {
   const auto stats = port.statistics();
-  Serial.printf("{\"active\":%s,\"error\":%u,\"slots\":%u,\"rxFrames\":%lu,"
-                "\"rxErrors\":%lu,\"txFrames\":%lu,\"txTimeouts\":%lu}\n",
-                port.isActive() ? "true" : "false", static_cast<unsigned>(port.lastError()),
+  Serial.printf("{\"type\":\"status\",\"mode\":\"%s\",\"active\":%s,\"error\":%u,\"slots\":%u,\"rxFrames\":%lu,"
+                "\"rxErrors\":%lu,\"txFrames\":%lu,\"txTimeouts\":%lu,\"freeHeap\":%lu}\n",
+                mode, port.isActive() ? "true" : "false", static_cast<unsigned>(port.lastError()),
                 port.numberOfSlots(), static_cast<unsigned long>(stats.receivedFrames),
                 static_cast<unsigned long>(stats.receiveErrors),
                 static_cast<unsigned long>(stats.transmittedFrames),
-                static_cast<unsigned long>(stats.transmitTimeouts));
+                static_cast<unsigned long>(stats.transmitTimeouts),
+                static_cast<unsigned long>(ESP.getFreeHeap()));
 }
 
 void execute() {
-  if (strcmp(command, "input") == 0) { port.startInput(); }
-  else if (strcmp(command, "output") == 0) {
+  if (strcmp(command, "input") == 0) { port.startInput(); mode = "input"; }
+  else if (strcmp(command, "output") == 0 || strcmp(command, "output24") == 0) {
     port.stop();
-    port.setFrame(pattern, 512);
+    available.store(false);
+    port.setFrame(pattern, strcmp(command, "output24") == 0 ? 24 : 512);
     port.startOutput();
-  } else if (strcmp(command, "stop") == 0) { port.stop(); }
+    mode = "output";
+  } else if (strcmp(command, "stop") == 0) {
+    port.stop(); available.store(false); mode = "stopped";
+  } else if (strcmp(command, "frame") == 0) {
+    const uint16_t slots = port.copyFrame(received, sizeof(received));
+    Serial.printf("{\"type\":\"frame\",\"slots\":%u,\"values\":[", slots);
+    for (uint16_t i = 0; i < slots; ++i) Serial.printf(i ? ",%u" : "%u", received[i]);
+    Serial.println("]}");
+    return;
+  } else if (strcmp(command, "quiet") == 0) { reportFrames = false; }
+  else if (strcmp(command, "verbose") == 0) { reportFrames = true; }
   else if (strcmp(command, "status") != 0) {
-    Serial.println("Commands: input / output / stop / status");
+    Serial.println("Commands: input / output / output24 / stop / status / frame / quiet / verbose");
   }
   status();
 }
@@ -76,7 +90,7 @@ void loop() {
     bool matches = slots == 512;
     for (uint16_t i = 0; i < slots; ++i) if (received[i] != pattern[i]) matches = false;
     static uint32_t lastReport = 0;
-    if (millis() - lastReport >= 1000) {
+    if (reportFrames && millis() - lastReport >= 1000) {
       Serial.printf("RX slots=%u first=%u last=%u patternMatch=%s\n", slots,
                     slots ? received[0] : 0, slots ? received[slots - 1] : 0,
                     matches ? "true" : "false");

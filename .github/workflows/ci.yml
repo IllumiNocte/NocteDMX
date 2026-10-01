@@ -33,7 +33,7 @@ jobs:
         run: ctest --test-dir build --build-config Release --output-on-failure
 
       - name: Check hardware runner syntax
-        run: python3 -m py_compile tests/hil/run_smoke.py
+        run: python3 -m py_compile tests/hil/run_smoke.py tests/hil/run_s3_bench.py
 
       - name: Test hardware runner without hardware
         run: python3 -m unittest discover -s tests/hil -p 'test_*.py' -v

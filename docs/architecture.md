@@ -101,7 +101,8 @@ Next, extract shared RDM sequencing against this real second backend without
 duplicating the ESP8266 register scheduler or inventing unused virtual
 interfaces. Native core tests and the [standalone HIL suite](../tests/hil/README.md)
 remain the regression boundary; precise timing qualification is a separate
-hardware exercise. S3 DMX is compile-tested, not yet hardware-qualified.
+hardware exercise. S3 UART1 DMX has passed direct-UART smoke tests;
+full qualification, UART2 and S3 RDM remain pending.
 
 ## Migration stages
 
@@ -115,7 +116,8 @@ hardware exercise. S3 DMX is compile-tested, not yet hardware-qualified.
 3. Replace global-only assumptions with constructible ports. (Implemented
    for ESP8266 with exclusive UART0 ownership and per-instance UID support.)
 4. Add the ESP32-S3 UART backend and validate it with the RP2040 HIL tester.
-   (Experimental DMX backend added; physical tests and shared RDM still pending.)
+   (Experimental DMX backend added and UART1 direct-UART smoke tests passed;
+   full qualification and shared RDM still pending.)
 5. Add optional PIO/DMA or vendor-specific backends behind the same facade.
 
 Every stage must keep the ESP8266 firmware compiling and retain the legacy

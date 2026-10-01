@@ -19,13 +19,14 @@ class RunnerDryTests(unittest.TestCase):
     def setUp(self):
         self.runner = load_runner()
 
-    def check_image(self, chip, suffix):
+    def check_image(self, chip, suffix, executable=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.runner.__file__ = str(root / "tests" / "hil" / "run_smoke.py")
             args = SimpleNamespace(chip=chip, arduino_cli="arduino-cli", fqbn="test-board",
                                    direction_pin=255, esp_port="mock-port",
-                                   esptool_script=None, serial_module_path=None)
+                                   esptool_script=None, serial_module_path=None,
+                                   esptool_executable=executable)
 
             def compile_only(command, check):
                 self.assertTrue(check)
@@ -43,6 +44,9 @@ class RunnerDryTests(unittest.TestCase):
             self.assertIn("compiler.cpp.extra_flags=-DNOCTE_HIL_DIRECTION_PIN=255", compile_command)
             self.assertFalse(any(flag.startswith("build.extra_flags=") for flag in compile_command))
             flash_command = run.call_args_list[1].args[0]
+            if executable:
+                self.assertEqual(flash_command[0], executable)
+                self.assertNotIn("-m", flash_command)
             self.assertEqual(flash_command[flash_command.index("--chip") + 1], chip)
             self.assertEqual(flash_command[-2], "0x0")
             self.assertTrue(flash_command[-1].endswith(suffix))
@@ -52,6 +56,9 @@ class RunnerDryTests(unittest.TestCase):
 
     def test_s3_merged_image(self):
         self.check_image("esp32s3", ".ino.merged.bin")
+
+    def test_s3_standalone_esptool(self):
+        self.check_image("esp32s3", ".ino.merged.bin", "vendor-esptool.exe")
 
     def test_s3_missing_merged_image_does_not_flash(self):
         with tempfile.TemporaryDirectory() as directory:
