@@ -220,8 +220,8 @@ void testRDMDiscovery() {
 	setup
 *************************************************************************/
 void setup() {
-  pinMode(BUILTIN_LED, OUTPUT);
-  digitalWrite(BUILTIN_LED, HIGH);  //means opposite
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);  //means opposite
   
   //pinMode(15, OUTPUT);            // used for testing
 

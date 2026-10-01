@@ -142,6 +142,21 @@ dmx.startRDM(
     nocte::dmx::PortMode::Send);
 ```
 
+For bounded controller reads, use the typed API and check the actual payload:
+
+```cpp
+const nocte::dmx::core::Uid fixture(UINT64_C(0x7FF052444D01));
+uint8_t info[25] = {};
+const auto result = dmx.getRdmParameter(fixture, 0x0060, info, sizeof(info));
+if (result.ok() && result.parameterDataLength == 19 && result.copiedLength == 19) {
+  // DEVICE_INFO occupies 19 bytes; the remaining buffer bytes are untouched.
+}
+```
+
+The result distinguishes ACK, NACK, deferred/overflow replies, timeout,
+invalid responses, and invalid arguments. Deferred/overflow handling remains
+the application's responsibility. SET accepts at most 231 parameter bytes.
+
 ## Examples
 
 | Example | Demonstrates | Extra dependency |
@@ -174,6 +189,10 @@ ctest --test-dir build --build-config Release --output-on-failure
 
 Hardware-in-the-loop tests are intentionally separate from CI. They require a
 real controller, RS-485 hardware, and the RP2040/RP2350 DMX test fixture.
+The [standalone HIL runner](tests/hil/README.md) flashes focused test sketches
+and checks DMX output/input, RDM GET/SET/discovery, invalid responses, and
+recovery without the uNode application. These are regression smoke tests,
+not a complete standards-conformance certification.
 
 ## Architecture
 
@@ -188,8 +207,10 @@ flowchart TD
     RS485 --> Bus[DMX and RDM bus]
 ```
 
-The portable core owns protocol limits, DMX frame operations, RDM packet
-construction, discovery decoding, and response validation. A PHY backend owns:
+The portable core owns protocol limits, UID/device-table utilities, frame and
+transaction storage, DMX frame operations, RDM packet construction, discovery
+decoding, and response validation. Receive assembly and transaction sequencing
+still live in the ESP8266 scheduler. A PHY backend owns:
 
 - UART, PIO, timer, and DMA resources
 - pin routing and RS-485 direction control
@@ -226,6 +247,10 @@ directly to a DMX line.
 UART0 is occupied while DMX or RDM is active, so `Serial.begin()` and other
 UART0 logging must not be used at the same time. Depending on the board, the
 transceiver may also need to be disabled during flashing and boot.
+Port objects can be constructed independently, but only one may own UART0 at
+a time. Check `isActive()` after starting. Use `setUid(core::Uid(...))` on the
+port for a per-instance RDM identity; the static legacy identity remains the
+fallback when no per-instance identity is configured.
 
 ## Project status
 
@@ -237,10 +262,12 @@ continues to build after each step.
 - [x] Isolate the ESP8266 implementation as a backend
 - [x] Extract common constants, frame operations, and RDM packet validation
 - [x] Replace the historical examples with public-API examples
-- [ ] Move frame ownership and RDM transaction state into the shared core
-- [ ] Replace the remaining global-only assumptions with constructible ports
+- [x] Move frame and RDM transaction storage into the shared core
+- [x] Add constructible ports with per-instance UID and exclusive UART ownership
+- [ ] Extract shared receive assembly and controller transaction sequencing
 - [ ] Add the ESP32-S3 UART backend
-- [ ] Validate both backends against the RP2040 HIL tester
+- [x] Add standalone RP2040 HIL tests for the ESP8266 backend
+- [ ] Validate the ESP32-S3 backend against the same HIL suite
 
 ## Compatibility
 

@@ -107,11 +107,48 @@ uint16_t validateRdmResponse(
   if (!hasHeader || receivedLength != rdmWireLength(messageLength)) {
     failures |= kRdmLengthMismatch;
   }
+  if (packet && receivedLength >= RDM_PKT_BASE_TOTAL_LEN
+      && messageLength >= RDM_PKT_BASE_MSG_LEN
+      && packet[RDM_IDX_PARAM_DATA_LEN] != messageLength - RDM_PKT_BASE_MSG_LEN) {
+    failures |= kRdmInvalidParameterDataLength;
+  }
 
   if (failures == kRdmResponseValid && !validateRDMPacket(packet)) {
     failures |= kRdmChecksumMismatch;
   }
   return failures;
+}
+
+bool matchesRdmResponse(const uint8_t* request, uint16_t requestLength,
+                        const uint8_t* response, uint16_t responseLength) {
+  if (!request || !response || requestLength < RDM_PKT_BASE_TOTAL_LEN
+      || responseLength < RDM_PKT_BASE_TOTAL_LEN) return false;
+  // E1.20-2025 10.3.1: a GET:QUEUED_MESSAGE can carry a queued PID or an
+  // empty STATUS_MESSAGES reply. Do not reject that legal PID change.
+  const bool queuedMessage = request[RDM_IDX_CMD_CLASS] == RDM_GET_COMMAND
+      && request[RDM_IDX_PID_MSB] == 0 && request[RDM_IDX_PID_LSB] == 0x20
+      && response[RDM_IDX_RESPONSE_TYPE] != RDM_RESPONSE_TYPE_NACK_REASON;
+  return memcmp(request + RDM_IDX_DESTINATION_UID,
+                response + RDM_IDX_SOURCE_UID, rdm::kUidSize) == 0
+      && memcmp(request + RDM_IDX_SOURCE_UID,
+                response + RDM_IDX_DESTINATION_UID, rdm::kUidSize) == 0
+      && request[RDM_IDX_TRANSACTION_NUM] == response[RDM_IDX_TRANSACTION_NUM]
+      && response[RDM_IDX_CMD_CLASS] == request[RDM_IDX_CMD_CLASS] + 1
+      && (queuedMessage || memcmp(request + RDM_IDX_PID_MSB,
+                                   response + RDM_IDX_PID_MSB, 2) == 0)
+      && memcmp(request + RDM_IDX_SUB_DEV_MSB, response + RDM_IDX_SUB_DEV_MSB, 2) == 0;
+}
+
+uint8_t copyRdmParameterData(const uint8_t* packet, uint16_t length,
+                             uint8_t* destination, uint16_t capacity) {
+  if (!packet || !destination || length < RDM_PKT_BASE_TOTAL_LEN) return 0;
+  const uint8_t pdl = packet[RDM_IDX_PARAM_DATA_LEN];
+  if (pdl > rdm::kMaximumParameterDataLength
+      || packet[RDM_IDX_PACKET_SIZE] != RDM_PKT_BASE_MSG_LEN + pdl
+      || length != rdmWireLength(packet[RDM_IDX_PACKET_SIZE])) return 0;
+  const uint8_t copied = static_cast<uint8_t>(capacity < pdl ? capacity : pdl);
+  memcpy(destination, packet + RDM_PKT_BASE_MSG_LEN, copied);
+  return copied;
 }
 
 RdmDiscoveryResult decodeRdmDiscoveryResponse(

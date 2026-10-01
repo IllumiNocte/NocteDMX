@@ -2,6 +2,24 @@
 
 ## 0.1.0 - Unreleased
 
+- Added Arduino-independent UID, fixed-capacity device table, frame storage,
+  and RDM transaction storage with native regression tests.
+- Added per-instance RDM identity and exclusive ESP8266 UART0 ownership;
+  destroying an inactive port no longer stops another port.
+- Added typed, bounded RDM GET/SET results and response correlation checks
+  for UID, transaction, command class, PID, sub-device, and PDL.
+- Fixed legacy `UID::copyToUID` to update the caller's object, UID formatting
+  to retain leading zeros, and the missing full-width `rdmPacketLength` getter.
+- Corrected UART ISR signatures and preserved prior interrupt state in
+  whole-frame operations.
+- Unified foreground RDM transmission through the hardware FIFO, with DMX
+  frame-boundary handoff, avoiding the older byte-per-interrupt transmit path.
+- Fixed 255-byte RDM message lengths wrapping while copying responder packets.
+- Added standalone ESP8266/RP2040 HIL sketches and a JSON-reporting runner;
+  CI also compiles HIL sketches and checks the runner's Python syntax.
+- Documented the current backend contract and the remaining shared-engine
+  extraction needed for ESP32-S3.
+
 - Added standalone native tests for the portable DMX/RDM core and GitHub
   Actions jobs for core tests, Arduino library linting, and compilation of all
   ESP8266 examples.
@@ -25,5 +43,5 @@
 - Removed the historical dual-UART sketch and its private duplicate driver;
   multiple ports will return through the regular backend interface.
 
-This release retains the DMX/RDM behaviour of the preceding uNode-maintained
-LXESP8266DMX fork while establishing the structure for additional backends.
+This release builds on the preceding uNode-maintained LXESP8266DMX fork while
+hardening response handling and establishing the structure for more backends.

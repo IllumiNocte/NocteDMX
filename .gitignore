@@ -2,3 +2,5 @@
 build/
 cmake-build-*/
 .pio/
+__pycache__/
+*.py[cod]

@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <WString.h>
 #include <rdm/UID.h>
+#include <nocte/core/DeviceTable.h>
 
 
 #define STORAGE_SIZE 1200
@@ -34,8 +35,7 @@
 
 class TOD {
 private:
-    uint8_t   storage[STORAGE_SIZE];
-    uint16_t  next;
+    nocte::dmx::core::DeviceTable<STORAGE_SIZE / 6> table;
 
 public:
     TOD( void );
@@ -46,14 +46,14 @@ public:
 	 *             the next index is increased by 6
 	 * @returns 0 if no more room in storage, otherwise 1
 	 */
-	uint8_t addUID(UID uid);
+	uint8_t addUID(const UID& uid);
 	/*!
 	 * @brief Add UID to array if storage does not contain this UID.
 	 * @discussion checks storage for match to uid
 	 *             if not found, calls addUID
 	 *             returns 0 if no more room
 	 */
-	uint8_t add(UID uid);
+	uint8_t add(const UID& uid);
 	/*!
 	 * @brief Removes 6 bytes from storage starting at index.
 	 */
@@ -68,7 +68,7 @@ public:
 	/*!
 	 * @brief calls addUID, does nothing if not enough room
 	 */
-	void push (UID uid);
+	void push (const UID& uid);
 	/*!
 	 * @brief pops the last 6 bytes from storage
 	 * @discussion Sets the bytes of the UID, using last 6 bytes of storage
@@ -81,7 +81,7 @@ public:
 	 * @brief searches storage for match to UID
 	 * @returns 1 if found, otherwise 0
 	 */
-	uint8_t contains( UID uid );
+	uint8_t contains(const UID& uid);
 	
 	/*!
 	 * @brief Number of UIDs in table

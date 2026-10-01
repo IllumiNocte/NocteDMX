@@ -23,6 +23,7 @@
 #include <stdint.h>
 #include <WString.h>
 #include <Printable.h>
+#include <nocte/core/Uid.h>
 
 
 // utility functions
@@ -39,11 +40,8 @@ void uid_long2Bytes(uint64_t u, uint8_t* bytes);
    (Based on Arduino IPAddress class using 6 bytes instead of 4)
 */
  
-class UID: public Printable
+class UID: public Printable, public nocte::dmx::core::Uid
 {
-private:
-    uint8_t bytes[6];
-
 public:
 	/*!
 	 * @brief default constructor
@@ -64,6 +62,7 @@ public:
 	 * @brief construct UID from pointer to 6 byte array
 	 */
     UID(const uint8_t *address);
+    UID(const UID&) = default;
 
 	// Overloaded equality operator
     bool operator==(const UID& addr) const;
@@ -71,39 +70,40 @@ public:
 
     // Overloaded index operator to allow getting and setting individual bytes
     uint8_t operator[](int index) const {
-        return bytes[index];
+        return data()[index];
     }
     uint8_t& operator[](int index) {
-        return bytes[index];
+        return data()[index];
     }
 
     // Overloaded copy operators to allow initialisation of UID objects
     UID& operator=(const uint8_t *address);
-    UID& operator=(UID address);
+    UID& operator=(const UID& address);
     
     /*!
 	 * @brief copy bytes of a UID into an array starting at index
 	 */
-    static void copyFromUID(UID id, uint8_t *address, uint16_t index=0) {
-    	memcpy(&address[index], id.bytes, sizeof(id.bytes));
+    static void copyFromUID(const UID& id, uint8_t *address, uint16_t index=0) {
+        memcpy(&address[index], id.data(), nocte::dmx::rdm::kUidSize);
     }
     
     /*!
 	 * @brief copy bytes into a UID from an array starting at index
 	 */
-    static void copyToUID(UID id, uint8_t *address, uint16_t index=0) {
-    	memcpy(id.bytes, &address[index], sizeof(id.bytes));
+    static void copyToUID(UID& id, const uint8_t *address, uint16_t index=0) {
+        memcpy(id.data(), &address[index], nocte::dmx::rdm::kUidSize);
     }
     
     /*!
 	 * @brief set the bytes of this UID to the midpoint of 2 UIDs
 	 */
-    uint8_t becomeMidpoint(UID a, UID b);
+    uint8_t becomeMidpoint(const UID& a, const UID& b);
     
     /*!
 	 * @brief pointer to the 6 byte array
 	 */
     uint8_t* rawbytes( void );
+    const uint8_t* rawbytes( void ) const;
     
     /*!
 	 * @brief set the bytes of this UID with a 64bit integer
@@ -113,7 +113,7 @@ public:
     /*!
 	 * @brief set the bytes of this UID with another UID (copy)
 	 */
-    void setBytes(UID u);
+    void setBytes(const UID& u);
     
     /*!
 	 * @brief set the bytes of this UID with individual mfg code and device ID bytes
@@ -125,7 +125,7 @@ public:
     /*!
 	 * @brief UID as 64 bit integer
 	 */
-    uint64_t getValue ( void );
+    uint64_t getValue ( void ) const;
 
 	/*!
 	 * @brief print with formatting

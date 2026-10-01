@@ -32,6 +32,9 @@ jobs:
       - name: Test
         run: ctest --test-dir build --build-config Release --output-on-failure
 
+      - name: Check hardware runner syntax
+        run: python3 -m py_compile tests/hil/run_smoke.py
+
   arduino-lint:
     name: Arduino library lint
     runs-on: ubuntu-latest
@@ -79,4 +82,4 @@ jobs:
               --warnings all \
               "$sketch"
             echo "::endgroup::"
-          done < <(find examples -name '*.ino' -print | sort)
+          done < <(find examples tests/hil -name '*.ino' -print | sort)

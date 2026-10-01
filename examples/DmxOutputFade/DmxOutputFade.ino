@@ -14,9 +14,13 @@
 
 #include <NocteDMX.h>
 
+#ifndef NOCTE_HIL_DIRECTION_PIN
+#define NOCTE_HIL_DIRECTION_PIN 5
+#endif
+
 namespace {
 
-constexpr uint8_t kDirectionPin = 5;
+constexpr uint8_t kDirectionPin = NOCTE_HIL_DIRECTION_PIN;
 constexpr uint16_t kChannelCount = nocte::dmx::kMinimumOutputSlots;
 
 nocte::dmx::Port& dmx = nocte::dmx::defaultPort();

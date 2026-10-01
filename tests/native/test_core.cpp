@@ -7,6 +7,9 @@
 #include <nocte/core/Constants.h>
 #include <nocte/core/DmxFrame.h>
 #include <nocte/core/RdmPacket.h>
+#include <nocte/core/Uid.h>
+#include <nocte/core/DeviceTable.h>
+#include <nocte/core/PortState.h>
 #include <rdm/rdm_utility.h>
 
 namespace {
@@ -210,6 +213,105 @@ void testRdmDiscoveryDecoding() {
             RdmDiscoveryResult::CollisionOrMalformed);
 }
 
+void testUidAndDeviceTable() {
+  using namespace nocte::dmx::core;
+  Uid uid(UINT64_C(0x7FF052444D01));
+  char text[14];
+  EXPECT_TRUE(uid.format(text, sizeof(text)));
+  EXPECT_TRUE(std::strcmp(text, "7FF0:52444D01") == 0);
+  EXPECT_EQ(Uid(uid.data()).value(), uid.value());
+  EXPECT_TRUE(!uid.format(text, 13));
+  EXPECT_EQ(text[0], '\0');
+  Uid midpoint;
+  EXPECT_TRUE(midpoint.setMidpoint(Uid(UINT64_C(0xFFFFFFFFFFFD)),
+                                  Uid(UINT64_C(0xFFFFFFFFFFFF))));
+  EXPECT_EQ(midpoint.value(), UINT64_C(0xFFFFFFFFFFFE));
+  EXPECT_TRUE(!midpoint.setMidpoint(uid, uid));
+  EXPECT_TRUE(Uid(UINT64_C(0x7FF0FFFFFFFF)).isBroadcast());
+  EXPECT_TRUE(!uid.isBroadcast());
+
+  DeviceTable<2> table;
+  EXPECT_TRUE(table.add(uid));
+  EXPECT_TRUE(!table.add(uid));
+  EXPECT_TRUE(table.append(midpoint));
+  EXPECT_TRUE(!table.append(Uid(1)));
+  EXPECT_EQ(table.count(), 2);
+  EXPECT_TRUE(!table.remove(2));
+  EXPECT_TRUE(table.remove(0));
+  Uid read;
+  EXPECT_TRUE(table.get(0, read));
+  EXPECT_EQ(read, midpoint);
+  EXPECT_TRUE(table.pop(read));
+  EXPECT_TRUE(!table.pop(read));
+  table.append(uid);
+  table.clear();
+  EXPECT_EQ(table.count(), 0);
+  EXPECT_EQ(table.data()[0], 0);
+}
+
+void testResponseCorrelationAndPayload() {
+  using namespace nocte::dmx;
+  uint8_t request[26] = {};
+  uint8_t response[28] = {};
+  const core::Uid controller(UINT64_C(0x7FF000000001));
+  const core::Uid fixture(UINT64_C(0x7FF052444D01));
+  core::initializeRdmControllerHeader(request, 24, controller.data(), 255, 1, 2);
+  std::memcpy(request + RDM_IDX_DESTINATION_UID, fixture.data(), 6);
+  core::setRdmParameterHeader(request, RDM_GET_COMMAND, RDM_DEVICE_START_ADDR, 0);
+  core::initializeRdmResponderHeader(response, 26, fixture.data(), 255, 0, 0, 2);
+  std::memcpy(response + RDM_IDX_DESTINATION_UID, controller.data(), 6);
+  core::setRdmParameterHeader(response, RDM_GET_COMMAND_RESPONSE, RDM_DEVICE_START_ADDR, 2);
+  response[24] = 1;
+  response[25] = 43;
+  appendRdmChecksum(response);
+  const core::RdmResponseObservation observation = {true, true, 500, 44, 316, 2144};
+  EXPECT_EQ(core::validateRdmResponse(response, sizeof(response), observation), 0);
+  EXPECT_TRUE(core::matchesRdmResponse(request, sizeof(request), response, sizeof(response)));
+  // A correct checksum does not make a stale or misaddressed response valid.
+  const uint8_t fields[] = {3, 9, 15, 18, 20, 21, 22};
+  for (uint8_t field : fields) {
+    response[field] ^= 1;
+    appendRdmChecksum(response);
+    EXPECT_TRUE(!core::matchesRdmResponse(request, sizeof(request), response, sizeof(response)));
+    response[field] ^= 1;
+  }
+  appendRdmChecksum(response);
+  uint8_t destination[5] = {0xA5, 0xA5, 0xA5, 0xA5, 0xA5};
+  EXPECT_EQ(core::copyRdmParameterData(response, sizeof(response), destination, 5), 2);
+  EXPECT_EQ(destination[0], 1);
+  EXPECT_EQ(destination[1], 43);
+  EXPECT_EQ(destination[2], 0xA5);
+  EXPECT_EQ(core::copyRdmParameterData(response, sizeof(response), destination, 1), 1);
+  EXPECT_EQ(core::copyRdmParameterData(response, sizeof(response) - 1, destination, 5), 0);
+  response[RDM_IDX_PARAM_DATA_LEN] = 3;
+  appendRdmChecksum(response);
+  EXPECT_TRUE((core::validateRdmResponse(response, sizeof(response), observation)
+      & core::kRdmInvalidParameterDataLength) != 0);
+  EXPECT_EQ(core::copyRdmParameterData(response, sizeof(response), destination, 5), 0);
+  // Queued-message replies intentionally report the queued PID, not 0x0020.
+  core::setRdmParameterHeader(request, RDM_GET_COMMAND, 0x0020, 0);
+  core::setRdmParameterHeader(response, RDM_GET_COMMAND_RESPONSE, 0x0030, 2);
+  EXPECT_TRUE(core::matchesRdmResponse(request, sizeof(request), response, sizeof(response)));
+  response[RDM_IDX_RESPONSE_TYPE] = RDM_RESPONSE_TYPE_NACK_REASON;
+  EXPECT_TRUE(!core::matchesRdmResponse(request, sizeof(request), response, sizeof(response)));
+  response[RDM_IDX_RESPONSE_TYPE] = RDM_RESPONSE_TYPE_ACK;
+  response[RDM_IDX_TRANSACTION_NUM]++;
+  EXPECT_TRUE(!core::matchesRdmResponse(request, sizeof(request), response, sizeof(response)));
+}
+
+void testPortStateIsolation() {
+  nocte::dmx::core::FrameStorage first;
+  nocte::dmx::core::FrameStorage second;
+  nocte::dmx::core::RdmTransactionState transaction;
+  first.dmx[512] = 231;
+  first.receivedLength = 513;
+  EXPECT_EQ(second.dmx[512], 0);
+  EXPECT_EQ(second.receivedLength, 0);
+  EXPECT_EQ(transaction.responseLength, 0);
+  EXPECT_EQ(transaction.validationFailures, 0);
+  EXPECT_EQ(transaction.request[256], 0);
+}
+
 }  // namespace
 
 int main() {
@@ -218,6 +320,9 @@ int main() {
   testRdmPacketConstruction();
   testRdmResponseValidation();
   testRdmDiscoveryDecoding();
+  testUidAndDeviceTable();
+  testResponseCorrelationAndPayload();
+  testPortStateIsolation();
 
   if (failures != 0) {
     std::cerr << failures << " NocteDMX core assertion(s) failed\n";

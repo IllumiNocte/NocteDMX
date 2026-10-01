@@ -29,6 +29,7 @@ static constexpr uint8_t kMinimumMessageLength = 24;
 static constexpr uint8_t kChecksumSize = 2;
 static constexpr uint8_t kStartCode = 0xCC;
 static constexpr uint8_t kSubStartCode = 0x01;
+static constexpr uint8_t kMaximumParameterDataLength = 231;
 
 }  // namespace rdm
 }  // namespace dmx

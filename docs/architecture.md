@@ -5,7 +5,7 @@
 - Keep DMX512-A and RDM behaviour independent of a controller vendor.
 - Keep register, UART, PIO, DMA, interrupt, RTOS, and GPIO details inside a
   platform backend.
-- Support multiple independent ports instead of assuming one global UART.
+- Support independent port objects; a backend must enforce hardware limits.
 - Avoid heap allocation and Arduino-only types in the future shared core.
 - Preserve the existing ESP8266 API while applications migrate.
 
@@ -31,11 +31,16 @@ controller must not require changes in application source files.
   remains responsible for the appropriate critical section.
 - `RdmPacket` builds common headers, decodes discovery replies, and validates
   observed controller responses including timing facts supplied by the PHY.
+- `Uid` stores, compares, formats, and bisects six-byte identifiers without
+  Arduino `String`, `Printable`, or heap allocation.
+- `DeviceTable<Capacity>` owns a bounded list of unique identifiers.
+- `PortState` owns the DMX buffers and RDM transaction buffers/observations,
+  separately for each port instance.
 
-The existing `rdm` directory contains portable UID, table-of-devices, and
-checksum utilities and will be folded into the same namespace incrementally.
-Frame ownership, callback dispatch, and controller transaction state remain
-the next extraction steps.
+The historical `rdm/UID.h` and `rdm/TOD.h` adapt the portable types to the old
+Arduino API. Checksum utilities retain their compatibility entry points.
+The ESP8266 scheduler still owns receive assembly, callback dispatch, and
+transaction sequencing. Shared storage is not yet a complete shared engine.
 
 ### PHY backends
 
@@ -50,9 +55,42 @@ A backend owns all controller-specific details:
 - interrupt-safe monotonic timestamps
 - critical sections required by its execution model
 
-The backend reports received bytes, BREAK, idle timeout, transmission
-completion, and hardware errors to the shared engine. It must not interpret
-RDM PIDs or own application callbacks.
+The intended engine/PHY boundary is received bytes, BREAK, idle timeout,
+transmission completion, and hardware errors. This event adapter is not yet
+implemented: the ESP8266 scheduler currently handles those events directly.
+Application-specific PIDs must remain outside the PHY.
+
+## Current port contract
+
+- A port is non-copyable and owns its frame, transaction, and callback state.
+- Start/stop, configuration, and blocking RDM commands are foreground-only;
+  the current API is not thread-safe or reentrant.
+- ESP8266 UART0 has one owner. A second instance cannot start until the owner
+  stops; check `isActive()` after starting. Destroying an inactive port must
+  not stop the owner. This does not provide two physical ESP8266 ports.
+- `setFrame`/`copyFrame` preserve the previous interrupt mask. They provide a
+  memory-consistent update/snapshot, not wire-frame double buffering.
+- Receive callbacks run in interrupt context. Set a flag and return; do not
+  allocate, block, print, or start controller transactions from a callback.
+- `setUid(core::Uid(...))` configures the instance's source UID. Until called,
+  the legacy static `THIS_DEVICE_ID` is used for compatibility.
+- Typed GET/SET report ACK, NACK, ACK_TIMER, ACK_OVERFLOW, timeout, invalid
+  response, or invalid arguments. GET copies at most `min(capacity, PDL)` and
+  reports both lengths. Deferred/overflow results are not automatically
+  retried or assembled; broadcast SET is not supported by these helpers.
+- Responses must match both UIDs, transaction, PID, command class, and
+  sub-device, as well as their declared length, PDL, checksum, and measured
+  response timing. Diagnostics describe the most recent transaction.
+  GET:QUEUED_MESSAGE is the explicit PID-correlation exception: an ACK can
+  carry the queued PID or STATUS_MESSAGES (E1.20-2025 section 10.3.1).
+
+For ESP32-S3, first implement UART resource ownership, exact TX completion,
+BREAK/MAB, direction control, and ISR-safe locking/timestamps. Extract shared
+receive assembly and transaction sequencing against that real second backend,
+without duplicating the ESP8266 register scheduler or inventing unused virtual
+interfaces. Native core tests and the [standalone HIL suite](../tests/hil/README.md)
+are the regression boundary; precise timing qualification remains a separate
+hardware exercise.
 
 ## Migration stages
 
@@ -61,8 +99,10 @@ RDM PIDs or own application callbacks.
 2. Extract shared constants, frame operations, packet construction and
    validation, then RDM state from the historical driver without changing
    ESP8266 behaviour. (In progress: constants/frame operations/RDM packet
-   helpers are shared; ownership and transaction state still remain.)
-3. Replace the remaining global-only assumptions with constructible ports.
+   helpers, UID/table utilities, frame storage and transaction storage are
+   shared; receive assembly and transaction sequencing still remain.)
+3. Replace global-only assumptions with constructible ports. (Implemented
+   for ESP8266 with exclusive UART0 ownership and per-instance UID support.)
 4. Add the ESP32-S3 UART backend and validate it with the RP2040 HIL tester.
 5. Add optional PIO/DMA or vendor-specific backends behind the same facade.
 

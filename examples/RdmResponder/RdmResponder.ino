@@ -33,7 +33,7 @@ uint8_t device_label[33];
 nocte::dmx::Port& dmx = nocte::dmx::defaultPort();
 
 void setup() {
-  pinMode(BUILTIN_LED, OUTPUT);
+  pinMode(LED_BUILTIN, OUTPUT);
   pinMode(DIRECTION_PIN, OUTPUT);
   pinMode(LED_PIN, OUTPUT);
   //diagnostic pins

@@ -20,6 +20,8 @@ enum RdmResponseValidationFailure : uint16_t {
   kRdmInvalidMessageLength = 1u << 7,
   kRdmLengthMismatch = 1u << 8,
   kRdmChecksumMismatch = 1u << 9,
+  kRdmInvalidParameterDataLength = 1u << 10,
+  kRdmUnexpectedResponse = 1u << 11,
 };
 
 struct RdmResponseObservation {
@@ -35,6 +37,18 @@ enum class RdmDiscoveryResult : uint8_t {
   None = 0,
   CollisionOrMalformed = 1,
   SingleDevice = 2,
+};
+
+enum class RdmCommandStatus : uint8_t {
+  Ack, Nack, Deferred, Overflow, Timeout, InvalidResponse, InvalidArgument,
+};
+
+struct RdmCommandResult {
+  RdmCommandStatus status;
+  uint8_t parameterDataLength;
+  uint8_t copiedLength;
+  uint16_t validationFailures;
+  bool ok() const { return status == RdmCommandStatus::Ack; }
 };
 
 uint16_t rdmWireLength(uint8_t messageLength);
@@ -66,6 +80,16 @@ uint16_t validateRdmResponse(
     const uint8_t* packet,
     uint16_t receivedLength,
     const RdmResponseObservation& observation);
+
+// Used only after packet validation. Compares both UIDs, transaction,
+// command class, PID and sub-device to the outstanding request. Queued-message
+// ACKs may report a different PID as required by E1.20.
+bool matchesRdmResponse(const uint8_t* request, uint16_t requestLength,
+                        const uint8_t* response, uint16_t responseLength);
+
+// Copies only actual PDL bytes; never consumes checksum or stale buffer tail.
+uint8_t copyRdmParameterData(const uint8_t* packet, uint16_t length,
+                             uint8_t* destination, uint16_t capacity);
 
 RdmDiscoveryResult decodeRdmDiscoveryResponse(
     const uint8_t* response,

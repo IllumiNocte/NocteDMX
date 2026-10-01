@@ -88,6 +88,9 @@ TX (1) |----------------------| 4 DI   Gnd 5 |---+------------ Pin 1
 #include <inttypes.h>
 #include <rdm/UID.h>
 #include "../../core/Constants.h"
+#include "../../core/PortState.h"
+#include "../../core/Uid.h"
+#include "../../core/RdmPacket.h"
 
 #define DMX_MIN_SLOTS nocte::dmx::kMinimumOutputSlots
 #define DMX_MIN_RECEIVE_SLOTS nocte::dmx::kMinimumReceiveSlots
@@ -106,6 +109,7 @@ TX (1) |----------------------| 4 DI   Gnd 5 |---+------------ Pin 1
 #define DMX_TASK_SEND_RDM		2
 #define DMX_TASK_SET_SEND		3
 #define DMX_TASK_SET_SEND_RDM	4
+#define DMX_TASK_SET_RECEIVE 5
 
 #define RDM_NO_DISCOVERY		0
 #define RDM_PARTIAL_DISCOVERY	1
@@ -129,7 +133,8 @@ typedef void (*LXRecvCallback)(int);
    and DMX data is received by UART0.
    Use getSlot() to read the level value for a particular DMX dimmer/address/channel.
    
-   LX8266DMX is used with a single instance called ESP8266DMX.
+   Constructed instances own independent state, but UART0 has one owner.
+   ESP8266DMX remains the compatibility/default instance.
    
    LX8266DMX is NOT compatible with Serial.begin when DMX will be read.
 */
@@ -140,6 +145,13 @@ class LX8266DMX {
   
 	LX8266DMX ( void );
    ~LX8266DMX( void );
+   LX8266DMX(const LX8266DMX&) = delete;
+   LX8266DMX& operator=(const LX8266DMX&) = delete;
+
+   // UART0 is exclusive. A second instance cannot stop or replace its owner.
+   bool isActive() const;
+   void setUid(const nocte::dmx::core::Uid& uid);
+   nocte::dmx::core::Uid uid() const;
     
    /*!
     * @brief starts interrupt that continuously sends DMX output
@@ -369,7 +381,7 @@ class LX8266DMX {
    /*!
     * @brief length of the rdm packet awaiting being sent
 	*/
-	uint8_t rdmPacketLength( void );
+	uint16_t rdmPacketLength( void );
 	
    /*!
     * @brief sends packet using bytes from _rdmPacket ( rdmData() )
@@ -387,7 +399,7 @@ class LX8266DMX {
     * @brief convenience method for setting fields in the top 20 bytes of an RDM message
     *        that will be sent.
     *        Destination UID needs to be set outside this method.
-    *        Source UID is set to static member THIS_DEVICE_ID
+    *        Source UID is the per-instance UID or legacy THIS_DEVICE_ID fallback
 	*/
 	void setupRDMControllerPacket(uint8_t* pdata, uint8_t msglen, uint8_t port, uint16_t subdevice);
 	
@@ -395,7 +407,7 @@ class LX8266DMX {
     * @brief convenience method for setting fields in the top 20 bytes of an RDM message
     *        that will be sent.
     *        Destination UID needs to be set outside this method.
-    *        Source UID is set to static member THIS_DEVICE_ID
+    *        Source UID is the per-instance UID or legacy THIS_DEVICE_ID fallback
 	*/
 	void  setupRDMDevicePacket(uint8_t* pdata, uint8_t msglen, uint8_t rtype, uint8_t msgs, uint16_t subdevice);
 	
@@ -411,7 +423,7 @@ class LX8266DMX {
 	*             so restores sending, waiting for a frame to be sent before returning.
     * @return 1 if discovered, 2 if valid packet (UID stored in uldata[12-17])
     */
-    uint8_t sendRDMDiscoveryPacket(UID lower, UID upper, UID* single);
+    uint8_t sendRDMDiscoveryPacket(const UID& lower, const UID& upper, UID* single);
 
    /** @return Number of bytes captured from the most recent discovery reply. */
    uint8_t lastRDMDiscoveryResponseLength( void ) const;
@@ -430,7 +442,7 @@ class LX8266DMX {
 	*             so restores sending, waiting for a frame to be sent before returning.
     * @return 1 if ack response is received.
     */
-    uint8_t sendRDMDiscoveryMute(UID target, uint8_t cmd);
+    uint8_t sendRDMDiscoveryMute(const UID& target, uint8_t cmd);
     
    /*!
     * @brief send previously built packet in _rdmPacket and validate response
@@ -479,7 +491,15 @@ class LX8266DMX {
 	*             so restores sending, waiting for a frame to be sent before returning.
     * @return 1 if ack is received.
     */
-    uint8_t sendRDMGetCommand(UID target, uint16_t pid, uint8_t* info, uint8_t len);
+    uint8_t sendRDMGetCommand(const UID& target, uint16_t pid, uint8_t* info, uint8_t len);
+
+    // Capacity is independent of actual PDL; the result reports both lengths.
+    nocte::dmx::core::RdmCommandResult getRdmParameter(
+        const nocte::dmx::core::Uid& target, uint16_t pid,
+        uint8_t* destination, uint16_t capacity);
+    nocte::dmx::core::RdmCommandResult setRdmParameter(
+        const nocte::dmx::core::Uid& target, uint16_t pid,
+        const uint8_t* data, uint16_t length);
     
    /*!
     * @brief send RDM_SET_COMMAND packet
@@ -487,7 +507,7 @@ class LX8266DMX {
 	*             so restores sending, waiting for a frame to be sent before returning.
     * @return 1 if ack is received.
     */
-    uint8_t sendRDMSetCommand(UID target, uint16_t pid, uint8_t* info, uint8_t len);
+    uint8_t sendRDMSetCommand(const UID& target, uint16_t pid, uint8_t* info, uint8_t len);
     
      
     /*!
@@ -520,142 +540,30 @@ class LX8266DMX {
     static UID THIS_DEVICE_ID;
     
   private:
+    nocte::dmx::core::FrameStorage _frames;
+    nocte::dmx::core::RdmTransactionState _rdm;
+    nocte::dmx::core::Uid _uid;
+    bool _customUid = false;
 
-	/*!
-	 * @brief switches the configured transceiver to transmit mode
-	 * @discussion IRAM resident because RDM turnaround also calls it from ISR.
-	 */
-	IRAM_ATTR void setTransceiverTransmit( void );
+    // Only these fields and functions belong to the ESP8266 PHY scheduler.
+    IRAM_ATTR void setTransceiverTransmit();
+    IRAM_ATTR void setTransceiverReceive();
+    void startRDMConfigured(uint8_t direction);
+    bool claimHardware();
+    nocte::dmx::core::RdmCommandResult commandResult(bool received);
+    const uint8_t* sourceUid() const;
 
-	/*!
-	 * @brief switches the configured transceiver to receive mode
-	 * @discussion Disables the driver before enabling the receiver and is IRAM
-	 *             resident because RDM turnaround calls it from ISR.
-	 */
-	IRAM_ATTR void setTransceiverReceive( void );
+    uint8_t _dmx_send_state;
+    volatile uint8_t _dmx_read_state;
+    uint8_t _interrupt_status;
+    uint8_t _idle_count;
+    volatile uint8_t _rdm_task_mode;
+    uint8_t _direction_pin;
+    uint8_t _receiver_enable_not_pin;
+    uint16_t _next_send_slot;
+    LXRecvCallback _receive_callback;
+    LXRecvCallback _rdm_receive_callback;
 
-	/*!
-	 * @brief starts RDM after the transceiver pins have been configured
-	 */
-	void startRDMConfigured( uint8_t direction );
-
-	/*!
-	 * @brief represents phase of sending dmx packet data/break/etc used to change baud settings
-	 */
-  	uint8_t  _dmx_send_state;
-  	
-	/*!
-	 * @brief represents phase of sending dmx packet data/break/etc used to change baud settings
-	 */
-  	volatile uint8_t  _dmx_read_state;
-  	
-	/*!
-	 * @brief true when ISR is enabled
-	 */
-  	uint8_t  _interrupt_status;
-  	
-	/*!
-	 * @brief count of idle interrupts
-	 */
-  	uint8_t  _idle_count;
-  	
-	/*!
-	 * @brief flag indicating RDM task should send dmx slots
-	 */
-  	uint8_t  _rdm_task_mode;
-  	
-	/*!
-	 * @brief flag indicating RDM task should send dmx slots
-	 */
-  	uint8_t  _rdm_read_handled;
-
-	/*! @brief set when a synchronous normal RDM response begins with BREAK */
-	volatile uint8_t _rdm_response_break_seen;
-
-	/*! @brief ISR timestamps used to enforce responder inter-slot timing */
-	volatile uint32_t _rdm_response_last_slot_us;
-	volatile uint32_t _rdm_response_max_slot_interval_us;
-	/*! @brief estimated controller EOP and first responder slot turnaround */
-	volatile uint32_t _rdm_controller_request_end_us;
-	volatile uint32_t _rdm_response_first_slot_delay_us;
-	uint16_t _rdm_last_response_validation_failures;
-	uint16_t _rdm_last_response_length;
-  	
-  	/*!
-	 * @brief transaction number
-	 */
-  	uint8_t _transaction;
-  	
-  	/*!
-	 * @brief maximum expected length of packet
-	 */
-  	uint16_t  _packet_length;
-  	
-	/*!
-	 * @brief shared direction pin or active-high DE pin
-	 */
-  	uint8_t _direction_pin;
-
-	/*!
-	 * @brief active-low /RE pin when DE and /RE are controlled separately
-	 */
-	uint8_t _receiver_enable_not_pin;
-  	
-	/*!
-	 * @brief slot index indicating position of byte to be sent
-	 */
-  	uint16_t  _next_send_slot;
-  	
-	/*!
-	 * @brief slot index indicating position of last byte received
-	 */
-  	volatile uint16_t  _next_read_slot;
-  	
-	/*!
-	 * @brief number of dmx slots in the latest output or received frame
-	 */
-  	volatile uint16_t  _slots;
-  	
-	/*!
-	 * @brief outgoing rdm packet length
-	 */
-	uint16_t  _rdm_len;
-  	
-	/*!
-	 * @brief Array of dmx data including start code
-	 */
-  	uint8_t  _dmxData[DMX_MAX_FRAME];
-  	
-	/*!
-	 * @brief Array of received bytes first byte is start code
-	 */
-  	uint8_t  _receivedData[DMX_MAX_FRAME];
-  	
-  	/*!
-	 * @brief Array representing an rdm packet to be sent
-	 */
-	uint8_t  _rdmPacket[RDM_MAX_FRAME];
-	
-	/*!
-	 * @brief Array representing a received rdm packet
-	 */
-	uint8_t  _rdmData[RDM_MAX_FRAME];
-
-	/*! @brief Snapshot of the latest discovery response before RX is reset. */
-	uint8_t _last_rdm_discovery_response[LX_RDM_DISCOVERY_DIAGNOSTIC_BYTES];
-	uint8_t _last_rdm_discovery_response_length;
-  	
-   /*!
-    * @brief Pointer to receive callback function
-	*/
-  	LXRecvCallback _receive_callback;
-  	
-   /*!
-    * @brief Pointer to receive callback function
-    */
-  	LXRecvCallback _rdm_receive_callback;
-  	
-  	
 };
 
 extern LX8266DMX ESP8266DMX;
