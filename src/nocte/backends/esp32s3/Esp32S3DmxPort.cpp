@@ -8,6 +8,7 @@
 #include <esp_timer.h>
 #include <soc/gpio_struct.h>
 #include <soc/uart_periph.h>
+#include <rdm/rdm_utility.h>
 
 namespace nocte { namespace dmx { namespace backends {
 namespace {
@@ -118,15 +119,18 @@ bool Esp32S3UartPort::initialize(bool receive) {
   lowErrorPending_.store(false);
   lowSeen_ = false;
   stopRequested_.store(false);
+  pauseRequested_.store(false);
+  outputPaused_.store(false);
+  rdmCapture_.store(false);
   active_.store(true);
-  if (receive) {
-    frames_.slots = 0;
+  if (receive || rdmEnabled_) {
+    if (receive) frames_.slots = 0;
     gpio_pullup_en(static_cast<gpio_num_t>(rxPin_));
     // UART BREAK alone does not qualify the physical low duration. The GPIO
     // edge ISR measures it; UART IRQs still handle all character data.
     attachInterruptArg(rxPin_, rxEdgeInterrupt, this, CHANGE);
     edgeAttached_ = true;
-    uart_ll_ena_intr_mask(hardware_, kRxInterrupts);
+    if (receive) uart_ll_ena_intr_mask(hardware_, kRxInterrupts);
   }
   return true;
 }
@@ -156,12 +160,34 @@ void Esp32S3UartPort::releaseHardware() {
 void Esp32S3UartPort::startInput() {
   if (isActive() && receiving_) return;
   stop();
+  rdmEnabled_ = false;
   initialize(true);
 }
 void Esp32S3UartPort::startOutput() {
-  if (isActive() && !receiving_) return;
+  if (isActive() && !receiving_ && !rdmEnabled_) return;
   stop();
+  rdmEnabled_ = false;
   if (!initialize(false)) return;
+  if (!core::isValidOutputSlotCount(frames_.slots)) frames_.slots = kMaximumSlots;
+  if (xTaskCreatePinnedToCore(outputTask, "NocteDMX TX", 3072, this, 4, &task_,
+                              xPortGetCoreID()) != pdPASS) {
+    error_ = S3PortError::TaskSetup;
+    task_ = nullptr;
+    releaseHardware();
+  }
+}
+void Esp32S3UartPort::startRDM(uint8_t pin, PortMode mode) {
+  startRDM(pin, 255, mode);
+}
+void Esp32S3UartPort::startRDM(uint8_t de, uint8_t reNot, PortMode mode) {
+  stop();
+  rdmEnabled_ = false;
+  if (mode != PortMode::Send) { error_ = S3PortError::InvalidConfiguration; return; }
+  error_ = S3PortError::None;
+  setDirectionPins(de, reNot);
+  if (error_ != S3PortError::None) return;
+  rdmEnabled_ = true;
+  if (!initialize(false)) { rdmEnabled_ = false; return; }
   if (!core::isValidOutputSlotCount(frames_.slots)) frames_.slots = kMaximumSlots;
   if (xTaskCreatePinnedToCore(outputTask, "NocteDMX TX", 3072, this, 4, &task_,
                               xPortGetCoreID()) != pdPASS) {
@@ -173,6 +199,7 @@ void Esp32S3UartPort::startOutput() {
 void Esp32S3UartPort::stop() {
   if (!isActive()) return;
   stopRequested_.store(true);
+  pauseRequested_.store(false);
   TaskHandle_t worker;
   portENTER_CRITICAL(&lock_);
   worker = task_;
@@ -222,6 +249,7 @@ bool Esp32S3UartPort::transmitFrame() {
     }
     vTaskDelay(1);
   }
+  lastTransmitEndUs_ = static_cast<uint32_t>(esp_timer_get_time());
   portENTER_CRITICAL(&lock_);
   statistics_.transmittedFrames++;
   portEXIT_CRITICAL(&lock_);
@@ -231,6 +259,13 @@ bool Esp32S3UartPort::transmitFrame() {
 void Esp32S3UartPort::outputTask(void* argument) {
   auto* port = static_cast<Esp32S3UartPort*>(argument);
   while (!port->stopRequested_.load()) {
+    if (port->pauseRequested_.load()) {
+      port->outputPaused_.store(true);
+      while (port->pauseRequested_.load() && !port->stopRequested_.load())
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+      port->outputPaused_.store(false);
+      continue;
+    }
     const uint32_t started = static_cast<uint32_t>(esp_timer_get_time());
     port->transmitFrame();
     const uint32_t elapsed = static_cast<uint32_t>(esp_timer_get_time()) - started;
@@ -242,6 +277,132 @@ void Esp32S3UartPort::outputTask(void* argument) {
   port->task_ = nullptr;
   portEXIT_CRITICAL(&port->lock_);
   vTaskDelete(nullptr); // No access to port storage after releasing its lock.
+}
+
+bool Esp32S3UartPort::pauseOutput() {
+  pauseRequested_.store(true);
+  portENTER_CRITICAL(&lock_);
+  if (task_) xTaskNotifyGive(task_);
+  portEXIT_CRITICAL(&lock_);
+  const uint32_t started = millis();
+  while (!outputPaused_.load()) {
+    if (millis() - started > 150) {
+      pauseRequested_.store(false);
+      portENTER_CRITICAL(&lock_);
+      if (task_) xTaskNotifyGive(task_);
+      portEXIT_CRITICAL(&lock_);
+      return false;
+    }
+    vTaskDelay(1);
+  }
+  return true;
+}
+
+core::RdmCommandResult Esp32S3UartPort::transactRdm(uint16_t length) {
+  using namespace core;
+  if (!pauseOutput()) return {RdmCommandStatus::InvalidResponse, 0, 0, kRdmReceiveError};
+  // One foreground caller, one persistent output task; no per-command allocation.
+  while (static_cast<uint32_t>(esp_timer_get_time()) - lastTransmitEndUs_ < 176) {}
+  portENTER_CRITICAL(&lock_);
+  uart_ll_disable_intr_mask(hardware_, kRxInterrupts);
+  uart_ll_rxfifo_rst(hardware_);
+  transmitLength_ = length;
+  transmitIndex_ = 0;
+  for (uint16_t i = 0; i < length; ++i) transmit_[i] = rdmRequest_[i];
+  portEXIT_CRITICAL(&lock_);
+  setDirection(true);
+  uart_ll_inverse_signal(hardware_, UART_SIGNAL_TXD_INV);
+  delayMicroseconds(kTxBreakUs);
+  uart_ll_inverse_signal(hardware_, 0);
+  delayMicroseconds(kTxMabUs);
+  portENTER_CRITICAL(&lock_);
+  fillTxFifo();
+  portEXIT_CRITICAL(&lock_);
+  const uint32_t started = static_cast<uint32_t>(esp_timer_get_time());
+  bool sent = false;
+  // Busy-poll the actual UART FSM (including both stop bits), not FIFO-empty or
+  // a 1-ms RTOS tick: driver release must occur within 88 us of wire EOP.
+  while (static_cast<uint32_t>(esp_timer_get_time()) - started < 35000) {
+    portENTER_CRITICAL(&lock_);
+    sent = transmitIndex_ == transmitLength_ && uart_ll_is_tx_idle(hardware_);
+    portEXIT_CRITICAL(&lock_);
+    if (sent) break;
+  }
+  const uint32_t requestEnd = static_cast<uint32_t>(esp_timer_get_time());
+  portENTER_CRITICAL(&lock_);
+  uart_ll_disable_intr_mask(hardware_, UART_INTR_TXFIFO_EMPTY);
+  if (!sent) { uart_ll_txfifo_rst(hardware_); statistics_.transmitTimeouts++; }
+  rdmReceiver_.begin(requestEnd);
+  if (!sent) rdmReceiver_.onError();
+  lowSeen_ = false;
+  breakPending_.store(false);
+  lowErrorPending_.store(false);
+  uart_ll_rxfifo_rst(hardware_);
+  uart_ll_clr_intsts_mask(hardware_, kRxInterrupts);
+  rdmCapture_.store(true);
+  uart_ll_ena_intr_mask(hardware_, kRxInterrupts);
+  portEXIT_CRITICAL(&lock_);
+  setDirection(false);
+  bool complete = false;
+  while (!complete) {
+    portENTER_CRITICAL(&lock_);
+    complete = rdmReceiver_.poll(static_cast<uint32_t>(esp_timer_get_time()));
+    portEXIT_CRITICAL(&lock_);
+    if (!complete) delayMicroseconds(50);
+  }
+  portENTER_CRITICAL(&lock_);
+  rdmCapture_.store(false);
+  uart_ll_disable_intr_mask(hardware_, kRxInterrupts);
+  uart_ll_rxfifo_rst(hardware_);
+  uart_ll_clr_intsts_mask(hardware_, kRxInterrupts);
+  portEXIT_CRITICAL(&lock_);
+  const auto result = classifyRdmResponse(rdmReceiver_.data(), rdmReceiver_.length(),
+      rdmReceiver_.validate(rdmRequest_, length));
+  // Quiet-window closure already exceeds 176 us after a received last slot;
+  // missing-response closure waits at least 3 ms after request EOP.
+  setDirection(true);
+  pauseRequested_.store(false);
+  portENTER_CRITICAL(&lock_);
+  if (task_) xTaskNotifyGive(task_);
+  portEXIT_CRITICAL(&lock_);
+  // Do not let a following command reuse the previous pause acknowledgement
+  // while the worker is leaving its wait loop. Each command needs a fresh
+  // frame-boundary acknowledgement, including back-to-back foreground calls.
+  while (outputPaused_.load()) vTaskDelay(1);
+  return result;
+}
+
+core::RdmCommandResult Esp32S3UartPort::getRdmParameter(const core::Uid& target,
+    uint16_t pid, uint8_t* destination, uint16_t capacity, const uint8_t* requestData,
+    uint16_t requestLength, uint16_t subDevice) {
+  using namespace core;
+  if (!isActive() || !rdmEnabled_ || receiving_ || target.isBroadcast()
+      || (capacity && !destination) || (requestLength && !requestData)
+      || requestLength > rdm::kMaximumParameterDataLength)
+    return {RdmCommandStatus::InvalidArgument, 0, 0, 0};
+  const uint16_t length = buildRdmRequest(rdmRequest_, uid_.data(), target.data(),
+      transaction_++, RDM_GET_COMMAND, pid, requestData, requestLength, subDevice);
+  auto result = transactRdm(length);
+  if (result.status == RdmCommandStatus::Ack || result.status == RdmCommandStatus::Overflow)
+    result.copiedLength = copyRdmParameterData(rdmReceiver_.data(), rdmReceiver_.length(),
+                                             destination, capacity);
+  return result;
+}
+core::RdmCommandResult Esp32S3UartPort::setRdmParameter(const core::Uid& target,
+    uint16_t pid, const uint8_t* data, uint16_t length, uint16_t subDevice) {
+  using namespace core;
+  if (!isActive() || !rdmEnabled_ || receiving_ || target.isBroadcast()
+      || length > rdm::kMaximumParameterDataLength || (length && !data))
+    return {RdmCommandStatus::InvalidArgument, 0, 0, 0};
+  const uint16_t wireLength = buildRdmRequest(rdmRequest_, uid_.data(), target.data(),
+      transaction_++, RDM_SET_COMMAND, pid, data, length, subDevice);
+  return transactRdm(wireLength);
+}
+uint16_t Esp32S3UartPort::copyRdmResponse(uint8_t* destination, uint16_t capacity) const {
+  if (!destination) return 0;
+  const uint16_t length = rdmReceiver_.length() < capacity ? rdmReceiver_.length() : capacity;
+  memcpy(destination, rdmReceiver_.data(), length);
+  return length;
 }
 
 void Esp32S3UartPort::fillTxFifo() {
@@ -263,24 +424,48 @@ bool Esp32S3UartPort::rxLevel() const {
 
 void Esp32S3UartPort::rxEdgeInterrupt(void* argument) {
   auto* port = static_cast<Esp32S3UartPort*>(argument);
-  if (!port->active_.load()) return;
+  if (!port->active_.load() || (!port->receiving_ && !port->rdmCapture_.load())) return;
   const uint32_t now = static_cast<uint32_t>(esp_timer_get_time());
   if (!port->rxLevel()) {
+    if (port->rdmCapture_.load()) {
+      portENTER_CRITICAL_ISR(&port->lock_);
+      port->rdmReceiver_.onLow(now);
+      port->rdmReceiver_.onStartBit(now);
+      portEXIT_CRITICAL_ISR(&port->lock_);
+    }
     port->fallingUs_ = now;
     port->lowSeen_ = true;
     return;
   }
   if (!port->lowSeen_) return;
-  const bool qualified = now - port->fallingUs_ >= kRxMinimumBreakUs;
+  // A normal 250-kbaud character can remain low for at most 36 us. Capture
+  // shorter-than-legal BREAK candidates too, so RDM diagnostics/validation
+  // retain the physical duration instead of confusing them with data bytes.
+  const uint32_t minimumLow = port->rdmCapture_.load() ? 44 : kRxMinimumBreakUs;
+  const bool qualified = now - port->fallingUs_ >= minimumLow;
   port->lowSeen_ = false;
-  if (!qualified && !port->breakPending_.load() && !port->lowErrorPending_.load()) return;
+  if (!qualified && !port->breakPending_.load() && !port->lowErrorPending_.load()) {
+    if (port->rdmCapture_.load()) {
+      portENTER_CRITICAL_ISR(&port->lock_);
+      port->rdmReceiver_.onHigh();
+      portEXIT_CRITICAL_ISR(&port->lock_);
+    }
+    return;
+  }
   portENTER_CRITICAL_ISR(&port->lock_);
   uart_ll_rxfifo_rst(port->hardware_); // Remove UART's artificial BREAK byte.
   uart_ll_clr_intsts_mask(port->hardware_, kRxInterrupts);
   port->breakPending_.store(false);
   port->lowErrorPending_.store(false);
-  const uint16_t completed = qualified ? port->receiver_.onBreak() : 0;
-  if (!qualified) { port->receiver_.onError(); port->statistics_.receiveErrors++; }
+  uint16_t completed = 0;
+  if (port->rdmCapture_.load()) {
+    port->rdmReceiver_.onHigh();
+    if (qualified) port->rdmReceiver_.onBreak(port->fallingUs_, now);
+    else port->rdmReceiver_.onError();
+  } else {
+    completed = qualified ? port->receiver_.onBreak() : 0;
+    if (!qualified) { port->receiver_.onError(); port->statistics_.receiveErrors++; }
+  }
   if (completed) port->statistics_.receivedFrames++;
   const auto callback = port->callback_;
   portEXIT_CRITICAL_ISR(&port->lock_);
@@ -298,6 +483,7 @@ void Esp32S3UartPort::uartInterrupt(void* argument) {
     uart_ll_rxfifo_rst(port->hardware_);
   }
   if (status & UART_INTR_RXFIFO_OVF) {
+    if (port->rdmCapture_.load()) port->rdmReceiver_.onError();
     port->receiver_.onError();
     port->statistics_.receiveErrors++;
     uart_ll_rxfifo_rst(port->hardware_);
@@ -307,14 +493,21 @@ void Esp32S3UartPort::uartInterrupt(void* argument) {
     // Qualify that low period at its rising edge rather than discarding the
     // preceding good frame before knowing whether this is its closing BREAK.
     if (!port->rxLevel()) port->lowErrorPending_.store(true);
-    else { port->receiver_.onError(); port->statistics_.receiveErrors++; }
+    else {
+      if (port->rdmCapture_.load()) port->rdmReceiver_.onError();
+      port->receiver_.onError(); port->statistics_.receiveErrors++;
+    }
     uart_ll_rxfifo_rst(port->hardware_);
   } else if (status & (UART_INTR_RXFIFO_FULL | UART_INTR_RXFIFO_TOUT)) {
     uint8_t bytes[128];
     const uint32_t count = uart_ll_get_rxfifo_len(port->hardware_);
     uart_ll_read_rxfifo(port->hardware_, bytes, count);
     if (!port->breakPending_.load() && !port->lowErrorPending_.load())
-      for (uint32_t i = 0; i < count; ++i) port->receiver_.onByte(bytes[i]);
+      for (uint32_t i = 0; i < count; ++i) {
+        if (port->rdmCapture_.load())
+          port->rdmReceiver_.onByte(bytes[i], static_cast<uint32_t>(esp_timer_get_time()));
+        else port->receiver_.onByte(bytes[i]);
+      }
   }
   uart_ll_clr_intsts_mask(port->hardware_, status);
   portEXIT_CRITICAL_ISR(&port->lock_);

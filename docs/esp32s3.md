@@ -1,10 +1,12 @@
 # ESP32-S3 UART bring-up
 
-This is an **experimental, UART1 smoke-tested DMX input/output backend**.
+This is an **experimental, UART1-tested DMX input/output and RDM controller backend**.
 The [first hardware validation](esp32s3-validation.md) covers 15 cases with
 direct UART. It is not a standards-conformance or electrical qualification.
-RDM is deliberately unavailable (`Port::supportsRdm == false`) until the DMX
-transport and shared RDM sequencing have been qualified.
+Typed unicast RDM GET/SET is available (`supportsRdmController == true`).
+Discovery and responder operation are not yet available; `supportsRdm` remains
+false for the full legacy RDM surface. No standards certification is implied.
+See [the RDM validation record](esp32s3-rdm-validation.md) for results and limits.
 
 ## Direct UART bench wiring
 
@@ -45,6 +47,10 @@ The bench starts as a receiver. Send newline-terminated commands over USB:
 - `output`: transmit 512 channels on GPIO17, `(channelIndex * 17 + 3) & 255`
   with zero-based channel index, at nominal 40 Hz.
 - `output24`: the same pattern with 24 channels.
+- `rdm`: continuous DMX with foreground RDM controller GET/SET enabled.
+- `get HEX_PID [capacity]`: query the synthetic fixture UID `7FF0:52444D01`.
+- `set HEX_PID HEX_DATA`: send parameter bytes (e.g. `set f0 002b` for address 43).
+- `invalid` / `burst`: argument guards / 100 back-to-back DEVICE_INFO reads.
 - `stop`: release the UART and stop traffic.
 - `status`: report mode, active state, setup error, slot count, error counters
   and free heap.
@@ -89,6 +95,39 @@ Tester 0.4.14 overwrites configured start codes before sending; the runner
 checks what the fixture actually sends. `--skip-start-code` explicitly records
 that coverage gap instead of treating it as a successful rejection test.
 
+Run the dedicated S3 RDM matrix separately (it uses the same bench sketch):
+
+```sh
+python tests/hil/run_s3_rdm.py --esp-port S3_SERIAL_PORT \
+  --fixture-port RP2040_SERIAL_PORT
+```
+
+`--no-flash` reuses the loaded sketch. This tests DEVICE_INFO, bounded copies,
+SET/readback, NACK, maximum request size, timing/envelope faults, recovery and
+repeated commands. It records actual timing estimates and a coverage gap when
+the fixture cannot physically generate a sub-8-us MAB. Cleanup independently
+returns the tester to idle/default RDM settings and S3 to input/verbose.
+
+## RDM controller contract
+
+Use `startRDM(255)` for this direct-UART bench, or tied/split direction pins with
+real transceivers. Only `PortMode::Send` is implemented. An unsupported receive
+mode leaves the port stopped with `InvalidConfiguration`. Configure your UID
+with `setUid`; the default `7FF0:00000002` is experimental, not a production UID.
+Calls are blocking and must originate from the same foreground task as lifecycle
+operations. DMX pauses only at a frame boundary and resumes after the response
+window. GET optionally accepts request PDL and a sub-device; SET accepts a
+sub-device. Broadcast GET/SET is rejected by these typed helpers.
+
+The portable receiver checks physical BREAK/MAB estimates, SOP spacing, per-byte
+interval and total packet duration, structural fields, checksum and correlation.
+It waits a 2144-us quiet window before closing, conservatively rejecting extra
+bytes in that window (unlike the ESP8266's existing post-EOP discard policy).
+Timeouts remain bounded; no automatic ACK_TIMER retry, queued-message polling,
+or ACK_OVERFLOW aggregation is performed. ACK_TIMER_HI_RES is not implemented.
+`copyRdmResponse` and `rdmReceiveTiming` expose the last captured packet/estimates
+for diagnostics; inspect the result status before interpreting its data.
+
 ## Backend contract and limitations
 
 - Defaults: UART1, TX17/RX18. A constructed port can select UART2 and other
@@ -124,5 +163,5 @@ that coverage gap instead of treating it as a successful rejection test.
 2. Measure BREAK/MAB, refresh, inter-slot gaps and last-stop-bit completion.
 3. Probe short/long BREAK, errors, oversized packets, recovery and start/stop.
 4. Repeat under USB/CPU/Wi-Fi load; check GPIO/UART interrupt ordering at BREAK.
-5. Add shared RDM transaction sequencing and bounded turnaround/discovery.
+5. Add S3 discovery/Mute/Unmute on the bounded controller transport, then responder support.
 6. Qualify RDM with real RS-485 transceivers, direction control and collisions.

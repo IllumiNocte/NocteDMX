@@ -11,6 +11,7 @@
 #include <nocte/core/DeviceTable.h>
 #include <nocte/core/PortState.h>
 #include <nocte/core/DmxReceiver.h>
+#include <nocte/core/RdmReceiver.h>
 #include <rdm/rdm_utility.h>
 
 namespace {
@@ -350,6 +351,116 @@ void testDmxReceiver() {
   EXPECT_EQ(frames.dmx[511], 0);
 }
 
+void testRdmControllerCore() {
+  using namespace nocte::dmx;
+  using namespace nocte::dmx::core;
+  const Uid controller(UINT64_C(0x7FF000000002)), target(UINT64_C(0x7FF052444D01));
+  uint8_t request[rdm::kMaximumFrameSize] = {};
+  uint8_t response[rdm::kMaximumFrameSize] = {};
+  const uint16_t requestLength = buildRdmRequest(request, controller.data(), target.data(),
+      17, RDM_GET_COMMAND, 0x00F0, nullptr, 0);
+  EXPECT_EQ(requestLength, 26);
+  EXPECT_TRUE(validateRDMPacket(request));
+  EXPECT_EQ(buildRdmRequest(request, controller.data(), target.data(), 17,
+      RDM_SET_COMMAND, 0x00F0, nullptr, 1), 0);
+  EXPECT_EQ(buildRdmRequest(request, controller.data(), target.data(), 17,
+      RDM_GET_COMMAND, 0, response, 232), 0);
+  initializeRdmResponderHeader(response, 26, target.data(), 17, 0, 0, 0);
+  memcpy(response + RDM_IDX_DESTINATION_UID, controller.data(), 6);
+  setRdmParameterHeader(response, RDM_GET_COMMAND_RESPONSE, 0x00F0, 2);
+  response[24] = 0; response[25] = 42;
+  appendRdmChecksum(response);
+  RdmReceiver receiver;
+  auto feed = [&](uint32_t end, uint32_t spacing, uint32_t gap = 0,
+                  uint32_t breakUs = 176, uint32_t mabUs = 12) {
+    receiver.begin(end);
+    receiver.onBreak(end + spacing, end + spacing + breakUs);
+    receiver.onStartBit(end + spacing + breakUs + mabUs);
+    for (uint16_t i = 0; i < 28; ++i)
+      receiver.onByte(response[i], end + spacing + breakUs + mabUs + 44 * (i + 1) + gap * i);
+  };
+  feed(100, 176);
+  EXPECT_TRUE(!receiver.poll(receiver.lastByteUs() + 2144));
+  EXPECT_TRUE(receiver.poll(receiver.lastByteUs() + 2145));
+  EXPECT_EQ(receiver.validate(request, requestLength), 0);
+  EXPECT_EQ(classifyRdmResponse(receiver.data(), receiver.length()).status, RdmCommandStatus::Ack);
+  feed(UINT32_MAX - 100, 2800); // All timestamp arithmetic survives wraparound.
+  receiver.poll(receiver.lastByteUs() + 2145);
+  EXPECT_EQ(receiver.validate(request, requestLength), 0);
+  feed(100, 175);
+  receiver.poll(receiver.lastByteUs() + 2145);
+  EXPECT_TRUE(receiver.validate(request, requestLength) & kRdmResponseTooEarly);
+  feed(100, 2801);
+  receiver.poll(receiver.lastByteUs() + 2145);
+  EXPECT_TRUE(receiver.validate(request, requestLength) & kRdmResponseTooLate);
+  feed(100, 500, 2101);
+  receiver.poll(receiver.lastByteUs() + 2145);
+  EXPECT_TRUE(receiver.validate(request, requestLength) & kRdmInterSlotTimeout);
+  EXPECT_TRUE(receiver.validate(request, requestLength) & kRdmPacketTimeExceeded);
+  for (uint32_t breakUs : {88u, 352u}) {
+    for (uint32_t mab : {8u, 88u}) {
+      feed(100, 500, 0, breakUs, mab);
+      receiver.poll(receiver.lastByteUs() + 2145);
+      EXPECT_EQ(receiver.validate(request, requestLength), 0);
+    }
+  }
+  feed(100, 500, 0, 353);
+  receiver.poll(receiver.lastByteUs() + 2145);
+  EXPECT_TRUE(receiver.validate(request, requestLength) & kRdmInvalidPhysicalTiming);
+  feed(100, 500, 0, 176, 7);
+  receiver.poll(receiver.lastByteUs() + 2145);
+  EXPECT_TRUE(receiver.validate(request, requestLength) & kRdmInvalidPhysicalTiming);
+  feed(100, 500);
+  receiver.onByte(99, receiver.lastByteUs() + 44);
+  receiver.poll(receiver.lastByteUs() + 2145);
+  EXPECT_TRUE(receiver.validate(request, requestLength) & kRdmLengthMismatch);
+  receiver.begin(100);
+  EXPECT_TRUE(!receiver.poll(3099));
+  EXPECT_TRUE(receiver.poll(3100));
+  EXPECT_EQ(classifyRdmResponse(receiver.data(), receiver.length(),
+      receiver.validate(request, requestLength)).status, RdmCommandStatus::Timeout);
+  receiver.begin(100);
+  for (uint16_t i = 0; i < 1000; ++i) receiver.onByte(0xAA, 500 + i * 44);
+  EXPECT_EQ(receiver.length(), rdm::kMaximumFrameSize);
+  receiver.poll(receiver.lastByteUs() + 2145);
+  EXPECT_TRUE(receiver.validate(request, requestLength) & kRdmMissingBreak);
+  EXPECT_TRUE(receiver.validate(request, requestLength) & kRdmLengthMismatch);
+  response[RDM_IDX_RESPONSE_TYPE] = RDM_RESPONSE_TYPE_NACK_REASON;
+  EXPECT_EQ(classifyRdmResponse(response, 28).status, RdmCommandStatus::Nack);
+  response[RDM_IDX_PARAM_DATA_LEN] = 1;
+  EXPECT_EQ(classifyRdmResponse(response, 28).status, RdmCommandStatus::InvalidResponse);
+  response[RDM_IDX_PARAM_DATA_LEN] = 2;
+  response[RDM_IDX_RESPONSE_TYPE] = 99;
+  EXPECT_TRUE(classifyRdmResponse(response, 28).validationFailures & kRdmUnexpectedResponse);
+  // Longest legal packet plus latest SOP and a quiet closure must not hit the
+  // absolute watchdog before completion (it needs more than 35 ms in total).
+  initializeRdmResponderHeader(response, 255, target.data(), 17, 0, 0, 0);
+  setRdmParameterHeader(response, RDM_GET_COMMAND_RESPONSE, 0x00F0, 231);
+  appendRdmChecksum(response);
+  receiver.begin(100);
+  receiver.onBreak(2900, 3252);
+  receiver.onStartBit(3340);
+  for (uint16_t i = 0; i < 257; ++i) receiver.onByte(response[i], 3340 + 44 * (i + 1) + 76 * i);
+  EXPECT_TRUE(!receiver.poll(receiver.lastByteUs() + 2144));
+  EXPECT_TRUE(receiver.poll(receiver.lastByteUs() + 2145));
+  EXPECT_EQ(receiver.validate(request, requestLength), 0);
+  uint8_t payload[231] = {};
+  EXPECT_EQ(buildRdmRequest(request, controller.data(), target.data(), 17,
+      RDM_SET_COMMAND, 0x00F0, payload, sizeof(payload)), 257);
+  EXPECT_TRUE(validateRDMPacket(request));
+  // A legal response starting at 2800 us may still be in its BREAK when the
+  // missing-response timer reaches 3000 us. Leading-edge observation must keep
+  // the receiver alive until the physical BREAK can be qualified at its end.
+  receiver.begin(100);
+  receiver.onLow(2900);
+  EXPECT_TRUE(!receiver.poll(3100));
+  EXPECT_TRUE(!receiver.poll(3252));
+  receiver.onHigh();
+  receiver.onBreak(2900, 3252);
+  receiver.onStartBit(3340);
+  EXPECT_TRUE(!receiver.poll(3340));
+}
+
 }  // namespace
 
 int main() {
@@ -362,6 +473,7 @@ int main() {
   testResponseCorrelationAndPayload();
   testPortStateIsolation();
   testDmxReceiver();
+  testRdmControllerCore();
 
   if (failures != 0) {
     std::cerr << failures << " NocteDMX core assertion(s) failed\n";

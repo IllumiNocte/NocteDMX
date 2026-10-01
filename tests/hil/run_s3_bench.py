@@ -20,7 +20,13 @@ class Bench:
 
     def command(self, text, kind="status"):
         self.serial.reset_input_buffer()
-        self.serial.write(text.encode("ascii") + b"\n")
+        payload = text.encode("ascii") + b"\n"
+        # USB CDC/JTAG RX buffering can be smaller than a maximum RDM SET
+        # command. Pace long lines so the foreground parser can drain it.
+        for start in range(0, len(payload), 48):
+            self.serial.write(payload[start:start + 48])
+            if len(payload) > 48:
+                time.sleep(0.005)
         self.serial.flush()
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:

@@ -35,6 +35,10 @@ controller must not require changes in application source files.
   not an arbitrary inter-slot idle timeout. It currently serves the S3 backend.
 - `RdmPacket` builds common headers, decodes discovery replies, and validates
   observed controller responses including timing facts supplied by the PHY.
+- `RdmReceiver` captures a normal controller response from BREAK, first START
+  bit, byte timestamps and hardware-error events. It has a fixed 257-byte
+  buffer, bounded deadlines and wrap-safe timing checks. The S3 uses this
+  adapter; ESP8266 receive/discovery scheduling has not yet migrated to it.
 - `Uid` stores, compares, formats, and bisects six-byte identifiers without
   Arduino `String`, `Printable`, or heap allocation.
 - `DeviceTable<Capacity>` owns a bounded list of unique identifiers.
@@ -59,9 +63,9 @@ A backend owns all controller-specific details:
 - interrupt-safe monotonic timestamps
 - critical sections required by its execution model
 
-The intended engine/PHY boundary is received bytes, BREAK, idle timeout,
-transmission completion, and hardware errors. This event adapter is not yet
-implemented: the ESP8266 scheduler currently handles those events directly.
+The engine/PHY boundary is received bytes, BREAK, first START bit, idle timeout,
+transmission completion, and hardware errors. The S3 now supplies normal RDM
+response events; the ESP8266 scheduler still handles its receive events directly.
 Application-specific PIDs must remain outside the PHY.
 
 ## Current port contract
@@ -95,14 +99,20 @@ Spinlocks protect snapshots across cores; an immutable per-frame TX buffer
 prevents mid-frame updates on the wire. Completion requires all bytes queued
 and the hardware shift register idle. An output task is allocated at start;
 the steady-state data path does not allocate. RX assembly uses `DmxReceiver`.
+RDM GET/SET pauses the same output task at a complete DMX frame boundary, runs
+one bounded half-duplex transaction, and resumes output without task allocation.
+The caller waits for the previous pause acknowledgement to clear before another
+command can begin. TX completion busy-polls the actual UART FSM before releasing
+DE; direct UART functional tests do not qualify physical DE//RE timing.
 See [the S3 guide](esp32s3.md) for restrictions and pending hardware validation.
 
-Next, extract shared RDM sequencing against this real second backend without
-duplicating the ESP8266 register scheduler or inventing unused virtual
-interfaces. Native core tests and the [standalone HIL suite](../tests/hil/README.md)
+Next, add discovery/Mute/Unmute and migrate more sequencing against this real
+second backend without duplicating the ESP8266 register scheduler or inventing
+unused virtual interfaces. Native core tests and the [standalone HIL suite](../tests/hil/README.md)
 remain the regression boundary; precise timing qualification is a separate
 hardware exercise. S3 UART1 DMX has passed direct-UART smoke tests;
-full qualification, UART2 and S3 RDM remain pending.
+S3 typed GET/SET and malformed-response recovery have direct-UART coverage;
+full qualification, UART2, S3 discovery and responder operation remain pending.
 
 ## Migration stages
 
@@ -117,7 +127,8 @@ full qualification, UART2 and S3 RDM remain pending.
    for ESP8266 with exclusive UART0 ownership and per-instance UID support.)
 4. Add the ESP32-S3 UART backend and validate it with the RP2040 HIL tester.
    (Experimental DMX backend added and UART1 direct-UART smoke tests passed;
-   full qualification and shared RDM still pending.)
+   shared normal RDM capture and controller GET/SET added; discovery, responder
+   operation and full qualification still pending.)
 5. Add optional PIO/DMA or vendor-specific backends behind the same facade.
 
 Every stage must keep the ESP8266 firmware compiling and retain the legacy

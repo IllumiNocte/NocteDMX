@@ -24,8 +24,9 @@ microcontroller families.
 
 The first backend is the proven ESP8266 UART0 implementation used by the
 uNode project. An experimental ESP32-S3 UART backend now provides DMX input
-and output, now smoke-tested on UART1 with an RP2040 fixture. Full timing and
-electrical qualification remain pending.
+and output plus unicast RDM controller GET/SET, tested on UART1 with an RP2040
+fixture. Discovery/responder support on S3, full timing and electrical
+qualification remain pending.
 
 > [!IMPORTANT]
 > NocteDMX is currently an early development release. The ESP8266 backend is
@@ -129,7 +130,10 @@ void loop() {
 
 ### Bidirectional RDM
 
-Currently available on ESP8266 only; the S3 backend does not expose RDM yet.
+ESP8266 provides the full current RDM API. ESP32-S3 provides the typed unicast
+controller GET/SET subset, without discovery or responder operation. Check
+`Port::supportsRdmController`, `supportsRdmDiscovery` and `supportsRdmResponder`;
+the broader legacy `supportsRdm` remains false on S3 until the full surface exists.
 
 With `DE` and active-low `/RE` tied to one direction pin:
 
@@ -215,9 +219,10 @@ flowchart TD
 
 The portable core owns protocol limits, UID/device-table utilities, frame and
 transaction storage, DMX frame operations, DMX receive assembly, RDM packet
-construction, discovery decoding, and response validation. The new DMX receiver
-is used by the S3 backend; the ESP8266 scheduler still owns its original receive
-assembly and transaction sequencing. A PHY backend owns:
+construction, discovery decoding, and response validation. S3 uses the portable
+DMX receiver and bounded normal RDM response receiver. Both backends use shared
+typed GET/SET packet construction and response classification; the ESP8266
+scheduler retains its original receive assembly and sequencing. A PHY backend owns:
 
 - UART, PIO, timer, and DMA resources
 - pin routing and RS-485 direction control
@@ -233,7 +238,7 @@ For the detailed boundary and porting sequence, see
 | Target | Status | Notes |
 | --- | --- | --- |
 | ESP8266 | Supported | UART0 input/output and bidirectional RDM |
-| ESP32-S3 | Experimental, UART1 smoke-tested | DMX input/output; UART2, RDM and full qualification pending |
+| ESP32-S3 | Experimental, UART1 tested | DMX input/output, unicast RDM GET/SET; discovery, responder, UART2 and full qualification pending |
 | RP2040 / RP2350 | Roadmap | Suitable candidate for a PIO-based backend |
 | STM32 | Roadmap | Hardware-UART backend planned |
 | AVR | Exploratory | Subject to RAM and timer/UART constraints |
@@ -276,7 +281,8 @@ continues to build after each step.
 - [x] Add standalone RP2040 HIL tests for the ESP8266 backend
 - [x] Validate S3 UART1 DMX input/output, fault recovery and lifecycle on direct UART
 - [ ] Validate the ESP32-S3 backend against the same HIL suite
-- [ ] Bring shared RDM sequencing to ESP32-S3
+- [x] Add shared normal RDM capture and S3 unicast controller GET/SET
+- [ ] Add S3 discovery/Mute/Unmute and responder operation
 
 ## ESP32-S3 UART bench
 

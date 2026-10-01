@@ -56,8 +56,22 @@ The ESP8266 tests/defaults remain unchanged.
 Python module. The expanded `run_s3_bench.py` suite uses tester 0.4.15 or later
 and covers 15 DMX/fault/lifecycle cases; `--no-flash` reuses the bench firmware.
 See [the validation record](../../docs/esp32s3-validation.md) for measured results
-and exclusions. No S3 RDM, Wi-Fi stress, UART2 or RS-485 electrical qualification
-is claimed by these direct-UART smoke tests.
+and exclusions. Wi-Fi stress, UART2 and RS-485 electrical qualification
+are not claimed by these direct-UART smoke tests.
+
+The separate S3 RDM GET/SET runner builds/flashes the same interactive bench:
+
+```sh
+python tests/hil/run_s3_rdm.py --esp-port COM6 --fixture-port COM3
+```
+
+It changes only the synthetic fixture, covers normal reads/writes, maximum
+request size, malformed/timing responses and recovery, plus repeated commands
+with DMX resumption/heap checks. Exact numerical timing limits are native-tested;
+hardware boundary profiles use margin (120-us receive BREAK, 500-us excessive
+BREAK, 200-us excessive MAB). Short-MAB hardware coverage is explicitly reported
+as missing when `normalMabUs=0` still generates a legal MAB due to fixture software.
+S3 discovery, responder and electrical qualification remain pending.
 Host-runner dry tests mock all serial/programming calls and verify image
 selection and the S3 RDM guard without Python hardware dependencies:
 

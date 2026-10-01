@@ -22,6 +22,10 @@ enum RdmResponseValidationFailure : uint16_t {
   kRdmChecksumMismatch = 1u << 9,
   kRdmInvalidParameterDataLength = 1u << 10,
   kRdmUnexpectedResponse = 1u << 11,
+  kRdmInvalidPhysicalTiming = 1u << 12,
+  kRdmReceiveError = 1u << 13,
+  kRdmResponseTooLate = 1u << 14,
+  kRdmPacketTimeExceeded = 1u << 15,
 };
 
 struct RdmResponseObservation {
@@ -52,6 +56,16 @@ struct RdmCommandResult {
 };
 
 uint16_t rdmWireLength(uint8_t messageLength);
+
+// Returns zero for invalid arguments. Includes checksum; no heap allocation.
+uint16_t buildRdmRequest(uint8_t* packet, const uint8_t* sourceUid,
+    const uint8_t* destinationUid, uint8_t transaction, uint8_t commandClass,
+    uint16_t pid, const uint8_t* data, uint16_t length, uint16_t subDevice = 0);
+
+// Call after structural validation and correlation. Keeps response-type handling
+// identical across backends; ACK_TIMER/overflow are reported, never auto-retried.
+RdmCommandResult classifyRdmResponse(const uint8_t* response, uint16_t length,
+                                    uint16_t validationFailures = 0);
 
 void initializeRdmControllerHeader(
     uint8_t* packet,

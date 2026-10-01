@@ -147,6 +147,10 @@ class LX8266DMX {
    ~LX8266DMX( void );
    LX8266DMX(const LX8266DMX&) = delete;
    LX8266DMX& operator=(const LX8266DMX&) = delete;
+  static constexpr bool supportsRdm = true;
+  static constexpr bool supportsRdmController = true;
+  static constexpr bool supportsRdmDiscovery = true;
+  static constexpr bool supportsRdmResponder = true;
 
    // UART0 is exclusive. A second instance cannot stop or replace its owner.
    bool isActive() const;

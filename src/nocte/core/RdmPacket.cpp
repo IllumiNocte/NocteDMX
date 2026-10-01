@@ -12,6 +12,44 @@ uint16_t rdmWireLength(uint8_t messageLength) {
   return static_cast<uint16_t>(messageLength) + rdm::kChecksumSize;
 }
 
+uint16_t buildRdmRequest(uint8_t* packet, const uint8_t* sourceUid,
+    const uint8_t* destinationUid, uint8_t transaction, uint8_t commandClass,
+    uint16_t pid, const uint8_t* data, uint16_t length, uint16_t subDevice) {
+  if (!packet || !sourceUid || !destinationUid || (length && !data)
+      || length > rdm::kMaximumParameterDataLength
+      || (commandClass != RDM_GET_COMMAND && commandClass != RDM_SET_COMMAND)) return 0;
+  const uint8_t messageLength = static_cast<uint8_t>(rdm::kMinimumMessageLength + length);
+  initializeRdmControllerHeader(packet, messageLength, sourceUid, transaction, 1, subDevice);
+  memcpy(packet + RDM_IDX_DESTINATION_UID, destinationUid, rdm::kUidSize);
+  setRdmParameterHeader(packet, commandClass, pid, static_cast<uint8_t>(length));
+  if (length) memcpy(packet + RDM_PKT_BASE_MSG_LEN, data, length);
+  const uint16_t checksum = rdmChecksum(packet, messageLength);
+  packet[messageLength] = static_cast<uint8_t>(checksum >> 8);
+  packet[messageLength + 1] = static_cast<uint8_t>(checksum);
+  return rdmWireLength(messageLength);
+}
+
+RdmCommandResult classifyRdmResponse(const uint8_t* response, uint16_t length,
+                                    uint16_t failures) {
+  if (!length && !failures) return {RdmCommandStatus::Timeout, 0, 0, 0};
+  if (failures || !response || length < RDM_PKT_BASE_TOTAL_LEN)
+    return {RdmCommandStatus::InvalidResponse, 0, 0, failures};
+  const uint8_t pdl = response[RDM_IDX_PARAM_DATA_LEN];
+  RdmCommandStatus status = RdmCommandStatus::InvalidResponse;
+  switch (response[RDM_IDX_RESPONSE_TYPE]) {
+    case RDM_RESPONSE_TYPE_ACK: status = RdmCommandStatus::Ack; break;
+    case RDM_RESPONSE_TYPE_NACK_REASON:
+      if (pdl == 2) status = RdmCommandStatus::Nack;
+      break;
+    case RDM_RESPONSE_TYPE_ACK_TIMER:
+      if (pdl == 2) status = RdmCommandStatus::Deferred;
+      break;
+    case RDM_RESPONSE_TYPE_ACK_OVERFLOW: status = RdmCommandStatus::Overflow; break;
+  }
+  if (status == RdmCommandStatus::InvalidResponse) failures |= kRdmUnexpectedResponse;
+  return {status, pdl, 0, failures};
+}
+
 void initializeRdmControllerHeader(
     uint8_t* packet,
     uint8_t messageLength,

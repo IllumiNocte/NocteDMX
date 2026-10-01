@@ -2,6 +2,16 @@
 
 ## 0.1.0 - Unreleased
 
+- Added S3 unicast RDM controller GET/SET with frame-boundary DMX pause/resume,
+  persistent output task, bounded receive deadlines and full UART-idle release.
+- Added a portable normal RDM response receiver with fixed storage and native
+  tests for timing boundaries, timestamp wraparound, maximum packet duration,
+  envelope correlation, extra bytes and malformed traffic.
+- Shared typed request construction/response classification with ESP8266;
+  added explicit controller/discovery/responder capability flags.
+- Added S3 RDM fault/recovery HIL and diagnostic timing reports; documented the
+  tester's short-MAB coverage gap and remaining S3 discovery/responder/RS485 work.
+
 - Hardware-smoke-tested ESP32-S3 UART1 against RP2040 tester 0.4.15: 15
   input/output, invalid-start-code/BREAK, noise-recovery, console-activity and
   lifecycle cases, including unchanged stopped-state heap after 100 cycles.

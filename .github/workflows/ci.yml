@@ -33,7 +33,7 @@ jobs:
         run: ctest --test-dir build --build-config Release --output-on-failure
 
       - name: Check hardware runner syntax
-        run: python3 -m py_compile tests/hil/run_smoke.py tests/hil/run_s3_bench.py
+        run: python3 -m py_compile tests/hil/run_smoke.py tests/hil/run_s3_bench.py tests/hil/run_s3_rdm.py
 
       - name: Test hardware runner without hardware
         run: python3 -m unittest discover -s tests/hil -p 'test_*.py' -v
@@ -88,7 +88,7 @@ jobs:
           done < <(find examples extras/hil -name '*.ino' ! -path 'extras/hil/Esp32S3UartBench/*' -print | sort)
 
   esp32s3-dmx:
-    name: ESP32-S3 experimental DMX
+    name: ESP32-S3 experimental DMX/RDM controller
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -108,7 +108,7 @@ jobs:
           arduino-cli core install esp32:esp32@3.3.12
           arduino-cli lib install "Adafruit NeoPixel@1.15.2"
 
-      - name: Compile DMX examples and UART bench
+      - name: Compile DMX examples and DMX/RDM UART bench
         shell: bash
         run: |
           set -euo pipefail

@@ -1408,15 +1408,7 @@ nocte::dmx::core::RdmCommandResult LX8266DMX::commandResult(bool received) {
                                         : RdmCommandStatus::InvalidResponse,
                 0, 0, _rdm.validationFailures};
     }
-    const uint8_t type = _rdm.response[RDM_IDX_RESPONSE_TYPE];
-    RdmCommandStatus status = RdmCommandStatus::InvalidResponse;
-    switch (type) {
-      case RDM_RESPONSE_TYPE_ACK: status = RdmCommandStatus::Ack; break;
-      case RDM_RESPONSE_TYPE_NACK_REASON: status = RdmCommandStatus::Nack; break;
-      case RDM_RESPONSE_TYPE_ACK_TIMER: status = RdmCommandStatus::Deferred; break;
-      case RDM_RESPONSE_TYPE_ACK_OVERFLOW: status = RdmCommandStatus::Overflow; break;
-    }
-    return {status, _rdm.response[RDM_IDX_PARAM_DATA_LEN], 0, 0};
+    return classifyRdmResponse(_rdm.response, _rdm.responseLength);
 }
 
 nocte::dmx::core::RdmCommandResult LX8266DMX::getRdmParameter(
@@ -1427,9 +1419,8 @@ nocte::dmx::core::RdmCommandResult LX8266DMX::getRdmParameter(
             || _interrupt_status != ISR_RDM_ENABLED) {
         return {RdmCommandStatus::InvalidArgument, 0, 0, 0};
     }
-    setupRDMControllerPacket(_rdm.request, RDM_PKT_BASE_MSG_LEN, RDM_PORT_ONE, RDM_ROOT_DEVICE);
-    memcpy(_rdm.request + RDM_IDX_DESTINATION_UID, target.data(), nocte::dmx::rdm::kUidSize);
-    setupRDMMessageDataBlock(_rdm.request, RDM_GET_COMMAND, pid, 0);
+    buildRdmRequest(_rdm.request, sourceUid(), target.data(), _rdm.transaction++,
+                    RDM_GET_COMMAND, pid, nullptr, 0);
     RdmCommandResult result = commandResult(sendRDMControllerPacket() != 0);
     if (result.status == RdmCommandStatus::Ack || result.status == RdmCommandStatus::Overflow) {
         result.copiedLength = copyRdmParameterData(
@@ -1447,11 +1438,8 @@ nocte::dmx::core::RdmCommandResult LX8266DMX::setRdmParameter(
             || _interrupt_status != ISR_RDM_ENABLED) {
         return {RdmCommandStatus::InvalidArgument, 0, 0, 0};
     }
-    setupRDMControllerPacket(_rdm.request,
-        static_cast<uint8_t>(RDM_PKT_BASE_MSG_LEN + length), RDM_PORT_ONE, RDM_ROOT_DEVICE);
-    memcpy(_rdm.request + RDM_IDX_DESTINATION_UID, target.data(), nocte::dmx::rdm::kUidSize);
-    setupRDMMessageDataBlock(_rdm.request, RDM_SET_COMMAND, pid, static_cast<uint8_t>(length));
-    if (length) memcpy(_rdm.request + RDM_PKT_BASE_MSG_LEN, data, length);
+    buildRdmRequest(_rdm.request, sourceUid(), target.data(), _rdm.transaction++,
+                    RDM_SET_COMMAND, pid, data, length);
     return commandResult(sendRDMControllerPacket() != 0);
 }
 

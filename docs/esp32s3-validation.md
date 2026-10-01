@@ -64,7 +64,9 @@ coverage from the unmodified 0.4.14 transmitter.
 - UART2, simultaneous independent ports, pin conflicts and setup failures on
   hardware, plus lifecycle calls in other supported task configurations.
 - RS-485 electrical levels, termination/bias, DE//RE release and contention.
-- Shared RDM sequencing, turnaround/discovery and S3 RDM conformance.
+- S3 discovery, responder operation and full RDM conformance. The subsequent
+  [GET/SET controller milestone](esp32s3-rdm-validation.md) now has separate
+  functional/fault/recovery coverage and also reruns these 15 DMX cases.
 
 After cleanup the RP2040 is idle with normal timing/start code and the S3
 remains in input mode with verbose console reporting enabled.
