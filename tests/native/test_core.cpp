@@ -10,6 +10,7 @@
 #include <nocte/core/Uid.h>
 #include <nocte/core/DeviceTable.h>
 #include <nocte/core/PortState.h>
+#include <nocte/core/DmxReceiver.h>
 #include <rdm/rdm_utility.h>
 
 namespace {
@@ -312,6 +313,43 @@ void testPortStateIsolation() {
   EXPECT_EQ(transaction.request[256], 0);
 }
 
+void testDmxReceiver() {
+  using namespace nocte::dmx;
+  core::FrameStorage frames;
+  core::DmxReceiver receiver(frames);
+  receiver.onByte(0); // Unframed bytes must not start a packet.
+  receiver.onByte(123);
+  EXPECT_EQ(receiver.onBreak(), 0);
+  receiver.onByte(0);
+  receiver.onByte(77);
+  EXPECT_EQ(receiver.onBreak(), 1);
+  EXPECT_EQ(frames.slots, 1);
+  EXPECT_EQ(frames.dmx[1], 77);
+  // Nonzero start codes and empty packets cannot overwrite the last good frame.
+  receiver.onByte(0xCC);
+  receiver.onByte(5);
+  EXPECT_EQ(receiver.onBreak(), 0);
+  EXPECT_EQ(receiver.onBreak(), 0);
+  receiver.onByte(0);
+  for (uint16_t i = 1; i <= kMaximumSlots; ++i) receiver.onByte(static_cast<uint8_t>(i));
+  EXPECT_EQ(receiver.onBreak(), 512);
+  EXPECT_EQ(frames.dmx[512], 0);
+  EXPECT_EQ(frames.dmx[511], 255);
+  receiver.onByte(0);
+  for (uint16_t i = 0; i <= kMaximumSlots; ++i) receiver.onByte(42);
+  EXPECT_EQ(receiver.onBreak(), 0); // Reject the whole oversized packet.
+  EXPECT_EQ(frames.dmx[511], 255);
+  receiver.onByte(0);
+  receiver.onByte(99);
+  receiver.onError();
+  EXPECT_EQ(receiver.onBreak(), 0);
+  receiver.onByte(0);
+  receiver.onByte(11);
+  EXPECT_EQ(receiver.onBreak(), 1); // Recovery, including clearing old tail.
+  EXPECT_EQ(frames.dmx[1], 11);
+  EXPECT_EQ(frames.dmx[511], 0);
+}
+
 }  // namespace
 
 int main() {
@@ -323,6 +361,7 @@ int main() {
   testUidAndDeviceTable();
   testResponseCorrelationAndPayload();
   testPortStateIsolation();
+  testDmxReceiver();
 
   if (failures != 0) {
     std::cerr << failures << " NocteDMX core assertion(s) failed\n";

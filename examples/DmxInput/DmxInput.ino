@@ -14,9 +14,13 @@
 
 #include <NocteDMX.h>
 
+#ifndef NOCTE_HIL_DIRECTION_PIN
+#define NOCTE_HIL_DIRECTION_PIN 5
+#endif
+
 namespace {
 
-constexpr uint8_t kDirectionPin = 5;
+constexpr uint8_t kDirectionPin = NOCTE_HIL_DIRECTION_PIN;
 constexpr uint8_t kLedPin = 14;
 
 nocte::dmx::Port& dmx = nocte::dmx::defaultPort();
@@ -31,6 +35,9 @@ void NOCTE_DMX_ISR_ATTR onDmxFrame(int slots) {
 
 void setup() {
   pinMode(kLedPin, OUTPUT);
+#if defined(ARDUINO_ARCH_ESP32)
+  analogWriteResolution(kLedPin, 10); // Match the ESP8266's 0..1023 range.
+#endif
   dmx.setDirectionPin(kDirectionPin);
   dmx.setDataReceivedCallback(onDmxFrame);
   dmx.startInput();

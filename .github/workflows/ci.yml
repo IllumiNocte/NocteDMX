@@ -35,6 +35,9 @@ jobs:
       - name: Check hardware runner syntax
         run: python3 -m py_compile tests/hil/run_smoke.py
 
+      - name: Test hardware runner without hardware
+        run: python3 -m unittest discover -s tests/hil -p 'test_*.py' -v
+
   arduino-lint:
     name: Arduino library lint
     runs-on: ubuntu-latest
@@ -82,4 +85,41 @@ jobs:
               --warnings all \
               "$sketch"
             echo "::endgroup::"
-          done < <(find examples extras/hil -name '*.ino' -print | sort)
+          done < <(find examples extras/hil -name '*.ino' ! -path 'extras/hil/Esp32S3UartBench/*' -print | sort)
+
+  esp32s3-dmx:
+    name: ESP32-S3 experimental DMX
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+        with:
+          version: "1.x"
+
+      - name: Install ESP32 core and example dependencies
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls \
+            https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.3.12
+          arduino-cli lib install "Adafruit NeoPixel@1.15.2"
+
+      - name: Compile DMX examples and UART bench
+        shell: bash
+        run: |
+          set -euo pipefail
+          for sketch in examples/DmxOutputFade examples/DmxInput examples/DmxNeoPixelInput \
+            extras/hil/DmxInputSmoke extras/hil/Esp32S3UartBench; do
+            echo "::group::${sketch}"
+            arduino-cli compile \
+              --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc \
+              --library "$GITHUB_WORKSPACE" \
+              --build-property compiler.cpp.extra_flags=-DNOCTE_HIL_DIRECTION_PIN=255 \
+              --warnings all \
+              "$sketch"
+            echo "::endgroup::"
+          done

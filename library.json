@@ -24,6 +24,6 @@
     "url": "https://github.com/IllumiNocte/NocteDMX.git"
   },
   "frameworks": "arduino",
-  "platforms": "espressif8266",
+  "platforms": ["espressif8266", "espressif32"],
   "headers": "NocteDMX.h"
 }

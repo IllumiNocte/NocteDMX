@@ -1,5 +1,9 @@
 #pragma once
 
+#if defined(ARDUINO_ARCH_ESP32)
+#include <sdkconfig.h>
+#endif
+
 // Keep platform selection in one place. A new controller family adds its
 // backend below without leaking vendor headers into application code.
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
@@ -30,6 +34,17 @@ inline Port& defaultPort() {
 
 }  // namespace dmx
 }  // namespace nocte
+
+#elif defined(ARDUINO_ARCH_ESP32) && defined(CONFIG_IDF_TARGET_ESP32S3)
+
+#include "backends/esp32s3/Esp32S3DmxPort.h"
+#ifndef NOCTE_DMX_ISR_ATTR
+#define NOCTE_DMX_ISR_ATTR IRAM_ATTR
+#endif
+namespace nocte { namespace dmx {
+using Port = backends::Esp32S3UartPort;
+inline Port& defaultPort() { static Port port; return port; }
+} }
 
 #else
 

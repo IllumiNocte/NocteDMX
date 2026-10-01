@@ -7,7 +7,7 @@
 [![Version](https://img.shields.io/badge/version-0.1.0-7259d6.svg)](CHANGELOG.md)
 [![CI](https://github.com/IllumiNocte/NocteDMX/actions/workflows/ci.yml/badge.svg)](https://github.com/IllumiNocte/NocteDMX/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-2f855a.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-ESP8266-e76f51.svg)](#platform-status)
+[![Platform](https://img.shields.io/badge/platform-ESP8266_%2F_ESP32--S3-e76f51.svg)](#platform-status)
 [![Status](https://img.shields.io/badge/status-active_development-f2b134.svg)](#project-status)
 
 Built by [IllumiNocte](https://github.com/IllumiNocte) for reliable lighting
@@ -23,7 +23,8 @@ and timing details so the same application code can later run on different
 microcontroller families.
 
 The first backend is the proven ESP8266 UART0 implementation used by the
-uNode project. ESP32-S3 is the next target.
+uNode project. An experimental ESP32-S3 UART backend now provides DMX input
+and output; its first hardware qualification is still pending.
 
 > [!IMPORTANT]
 > NocteDMX is currently an early development release. The ESP8266 backend is
@@ -127,6 +128,8 @@ void loop() {
 
 ### Bidirectional RDM
 
+Currently available on ESP8266 only; the S3 backend does not expose RDM yet.
+
 With `DE` and active-low `/RE` tied to one direction pin:
 
 ```cpp
@@ -177,7 +180,9 @@ NocteDMX is tested independently from any consuming firmware:
   handling, packet construction, checksum validation, timing failure flags,
   and discovery decoding;
 - Arduino Lint checks library and release metadata;
-- every public example is compiled against ESP8266 Arduino Core 3.1.2.
+- every public example is compiled against ESP8266 Arduino Core 3.1.2;
+- DMX examples and S3 bench firmware are compiled against ESP32 Arduino Core
+  3.3.12. A successful build is not a hardware or timing qualification.
 
 Run the portable tests locally with a CMake-compatible C++ compiler:
 
@@ -208,9 +213,10 @@ flowchart TD
 ```
 
 The portable core owns protocol limits, UID/device-table utilities, frame and
-transaction storage, DMX frame operations, RDM packet construction, discovery
-decoding, and response validation. Receive assembly and transaction sequencing
-still live in the ESP8266 scheduler. A PHY backend owns:
+transaction storage, DMX frame operations, DMX receive assembly, RDM packet
+construction, discovery decoding, and response validation. The new DMX receiver
+is used by the S3 backend; the ESP8266 scheduler still owns its original receive
+assembly and transaction sequencing. A PHY backend owns:
 
 - UART, PIO, timer, and DMA resources
 - pin routing and RS-485 direction control
@@ -226,7 +232,7 @@ For the detailed boundary and porting sequence, see
 | Target | Status | Notes |
 | --- | --- | --- |
 | ESP8266 | Supported | UART0 input/output and bidirectional RDM |
-| ESP32-S3 | Planned next | UART backend first; optional specialized backend later |
+| ESP32-S3 | Experimental, compile-tested | UART1/2 DMX input/output; RDM and hardware qualification pending |
 | RP2040 / RP2350 | Roadmap | Suitable candidate for a PIO-based backend |
 | STM32 | Roadmap | Hardware-UART backend planned |
 | AVR | Exploratory | Subject to RAM and timer/UART constraints |
@@ -265,9 +271,33 @@ continues to build after each step.
 - [x] Move frame and RDM transaction storage into the shared core
 - [x] Add constructible ports with per-instance UID and exclusive UART ownership
 - [ ] Extract shared receive assembly and controller transaction sequencing
-- [ ] Add the ESP32-S3 UART backend
+- [x] Add an experimental ESP32-S3 UART backend for DMX input/output
 - [x] Add standalone RP2040 HIL tests for the ESP8266 backend
 - [ ] Validate the ESP32-S3 backend against the same HIL suite
+- [ ] Bring shared RDM sequencing to ESP32-S3
+
+## ESP32-S3 UART bench
+
+The default port uses UART1, TX **GPIO17**, RX **GPIO18**, leaving UART0 and
+native USB available for programming/logging. UART2 and other suitable pins
+can be selected before starting the port. Other ESP32 variants are not supported.
+
+For a direct **3.3-V UART** connection to the RP2040 tester:
+
+| ESP32-S3 | RP2040 tester |
+| --- | --- |
+| GPIO17 TX | GPIO1 RX |
+| GPIO18 RX | GPIO0 TX |
+| GND | GND |
+
+Use `setDirectionPin(255)` to disable direction GPIOs. This is a crossed UART
+bench connection, **not** a connection to a DMX/RS-485 line. Only one device
+should transmit during each DMX input/output test.
+
+[`Esp32S3UartBench`](extras/hil/Esp32S3UartBench/Esp32S3UartBench.ino) starts in
+input mode and accepts `input`, `output`, `stop` and `status` through USB CDC.
+See [the S3 bring-up guide](docs/esp32s3.md) for the build command, backend
+constraints and the remaining hardware tests.
 
 ## Compatibility
 

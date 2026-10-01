@@ -29,6 +29,10 @@ controller must not require changes in application source files.
 - `Constants.h` owns protocol limits shared by all backends.
 - `DmxFrame` validates slot counts and copies channel data while the backend
   remains responsible for the appropriate critical section.
+- `DmxReceiver` assembles null-start-code DMX frames from qualified BREAK and
+  byte events. It discards unknown start codes, oversized and damaged frames,
+  and preserves the last valid snapshot. It publishes at the next BREAK,
+  not an arbitrary inter-slot idle timeout. It currently serves the S3 backend.
 - `RdmPacket` builds common headers, decodes discovery replies, and validates
   observed controller responses including timing facts supplied by the PHY.
 - `Uid` stores, compares, formats, and bisects six-byte identifiers without
@@ -68,7 +72,7 @@ Application-specific PIDs must remain outside the PHY.
 - ESP8266 UART0 has one owner. A second instance cannot start until the owner
   stops; check `isActive()` after starting. Destroying an inactive port must
   not stop the owner. This does not provide two physical ESP8266 ports.
-- `setFrame`/`copyFrame` preserve the previous interrupt mask. They provide a
+- ESP8266 `setFrame`/`copyFrame` preserve the previous interrupt mask. They provide a
   memory-consistent update/snapshot, not wire-frame double buffering.
 - Receive callbacks run in interrupt context. Set a flag and return; do not
   allocate, block, print, or start controller transactions from a callback.
@@ -84,13 +88,20 @@ Application-specific PIDs must remain outside the PHY.
   GET:QUEUED_MESSAGE is the explicit PID-correlation exception: an ACK can
   carry the queued PID or STATUS_MESSAGES (E1.20-2025 section 10.3.1).
 
-For ESP32-S3, first implement UART resource ownership, exact TX completion,
-BREAK/MAB, direction control, and ISR-safe locking/timestamps. Extract shared
-receive assembly and transaction sequencing against that real second backend,
-without duplicating the ESP8266 register scheduler or inventing unused virtual
+The experimental ESP32-S3 backend owns UART1/2 and its GPIOs exclusively between
+NocteDMX instances. It rejects a UART already occupied by the IDF driver;
+applications must not start another UART driver on that resource afterwards.
+Spinlocks protect snapshots across cores; an immutable per-frame TX buffer
+prevents mid-frame updates on the wire. Completion requires all bytes queued
+and the hardware shift register idle. An output task is allocated at start;
+the steady-state data path does not allocate. RX assembly uses `DmxReceiver`.
+See [the S3 guide](esp32s3.md) for restrictions and pending hardware validation.
+
+Next, extract shared RDM sequencing against this real second backend without
+duplicating the ESP8266 register scheduler or inventing unused virtual
 interfaces. Native core tests and the [standalone HIL suite](../tests/hil/README.md)
-are the regression boundary; precise timing qualification remains a separate
-hardware exercise.
+remain the regression boundary; precise timing qualification is a separate
+hardware exercise. S3 DMX is compile-tested, not yet hardware-qualified.
 
 ## Migration stages
 
@@ -104,6 +115,7 @@ hardware exercise.
 3. Replace global-only assumptions with constructible ports. (Implemented
    for ESP8266 with exclusive UART0 ownership and per-instance UID support.)
 4. Add the ESP32-S3 UART backend and validate it with the RP2040 HIL tester.
+   (Experimental DMX backend added; physical tests and shared RDM still pending.)
 5. Add optional PIO/DMA or vendor-specific backends behind the same facade.
 
 Every stage must keep the ESP8266 firmware compiling and retain the legacy

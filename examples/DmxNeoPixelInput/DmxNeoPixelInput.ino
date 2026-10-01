@@ -13,9 +13,13 @@
 #include <NocteDMX.h>
 #include <Adafruit_NeoPixel.h>
 
+#ifndef NOCTE_HIL_DIRECTION_PIN
+#define NOCTE_HIL_DIRECTION_PIN 5
+#endif
+
 namespace {
 
-constexpr uint8_t kDirectionPin = 5;
+constexpr uint8_t kDirectionPin = NOCTE_HIL_DIRECTION_PIN;
 constexpr uint8_t kPixelPin = 14;
 constexpr uint16_t kPixelCount = 12;
 constexpr uint16_t kChannelCount = kPixelCount * 3;

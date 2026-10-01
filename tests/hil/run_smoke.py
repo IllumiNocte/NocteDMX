@@ -1,4 +1,4 @@
-"""Standalone RP2040/ESP8266 HIL smoke tests; no uNode firmware required."""
+"""Standalone RP2040/ESP HIL smoke tests; no uNode firmware required."""
 import argparse
 import datetime
 import json
@@ -61,12 +61,12 @@ def build_and_flash(args, fixture, sketch):
     fixture.idle()  # Mandatory: a driving RS485 RO can block the USB bootloader.
     root = Path(__file__).resolve().parents[2]
     source = root / sketch
-    build = root / "build" / "hil" / source.name
+    build = root / "build" / "hil" / args.chip / source.name
     subprocess.run([
         args.arduino_cli, "compile", "--fqbn", args.fqbn,
         "--library", str(root), "--warnings", "all",
         "--build-path", str(build),
-        "--build-property", "build.extra_flags=-DNOCTE_HIL_DIRECTION_PIN=" + str(args.direction_pin),
+        "--build-property", "compiler.cpp.extra_flags=-DNOCTE_HIL_DIRECTION_PIN=" + str(args.direction_pin),
         str(source),
     ], check=True)
     command = [sys.executable]
@@ -80,9 +80,13 @@ def build_and_flash(args, fixture, sketch):
         command.append(args.esptool_script)
     else:
         command += ["-m", "esptool"]
-    command += ["--chip", "esp8266", "--port", args.esp_port,
+    suffix = ".ino.merged.bin" if args.chip == "esp32s3" else ".ino.bin"
+    firmware = build / (source.name + suffix)
+    if not firmware.is_file():
+        raise FileNotFoundError("Expected flash image missing: " + str(firmware))
+    command += ["--chip", args.chip, "--port", args.esp_port,
                 "--baud", "460800", "write_flash", "0x0",
-                str(build / (source.name + ".ino.bin"))]
+                str(firmware)]
     subprocess.run(command, check=True)
 
 
@@ -192,21 +196,30 @@ def main():
     parser.add_argument("--arduino-cli", default="arduino-cli")
     parser.add_argument("--esptool-script", help="Optional path to a bundled esptool.py")
     parser.add_argument("--serial-module-path", help="pyserial directory for isolated Arduino Python")
-    parser.add_argument("--fqbn", default="esp8266:esp8266:generic")
-    parser.add_argument("--direction-pin", type=int, default=5)
-    parser.add_argument("--tests", choices=("all", "output", "input", "rdm"), default="all")
+    parser.add_argument("--chip", choices=("esp8266", "esp32s3"), default="esp8266")
+    parser.add_argument("--fqbn", help="Override the chip-specific board definition")
+    parser.add_argument("--direction-pin", type=int, help="Default: ESP8266=5, S3=255 (unused)")
+    parser.add_argument("--tests", choices=("all", "dmx", "output", "input", "rdm"), default="all")
     parser.add_argument("--report", default="build/hil/report.json")
     args = parser.parse_args()
+    if args.chip == "esp32s3" and args.tests in ("all", "rdm"):
+        parser.error("ESP32-S3 RDM is not implemented; select --tests dmx, output or input")
+    if args.fqbn is None:
+        args.fqbn = "esp32:esp32:esp32s3:CDCOnBoot=cdc" if args.chip == "esp32s3" else "esp8266:esp8266:generic"
+    if args.direction_pin is None:
+        args.direction_pin = 255 if args.chip == "esp32s3" else 5
+    if not 0 <= args.direction_pin <= 255:
+        parser.error("Direction pin must be 0..255 (255 disables direction control)")
     if os.path.normcase(args.esp_port) == os.path.normcase(args.fixture_port):
         parser.error("ESP and fixture ports must differ")
-    report = {"time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    report = {"time": datetime.datetime.now(datetime.timezone.utc).isoformat(), "chip": args.chip,
               "tests": {}, "ok": False}
     fixture = None
     try:
         fixture = Fixture(args.fixture_port)
         report["fixture"] = fixture.command(cmd="ping")
         for name, function in (("output", test_output), ("input", test_input), ("rdm", test_rdm)):
-            if args.tests in ("all", name):
+            if args.tests in ("all", name) or (args.tests == "dmx" and name in ("output", "input")):
                 print("Running " + name, flush=True)
                 report["tests"][name] = function(args, fixture)
                 print("PASS " + name, flush=True)

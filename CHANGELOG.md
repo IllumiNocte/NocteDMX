@@ -2,6 +2,16 @@
 
 ## 0.1.0 - Unreleased
 
+- Added an experimental ESP32-S3 UART1/2 backend for DMX input/output, with
+  configurable pins, optional direction GPIOs, per-frame TX snapshots,
+  hardware-idle completion checks and cooperative task shutdown.
+- Added portable DMX receive assembly and native tests for unknown start
+  codes, truncated/oversized packets, UART errors and recovery.
+- Added a direct-UART S3 bench sketch (TX17/RX18, no DE//RE), S3 compile CI
+  and chip-aware DMX smoke-test preparation. S3 RDM and hardware timing
+  qualification are not implemented/claimed by this milestone.
+- Expanded package metadata and DMX example compilation to ESP32-S3 while
+  preserving the ESP8266 backend and its full RDM examples.
 - Added Arduino-independent UID, fixed-capacity device table, frame storage,
   and RDM transaction storage with native regression tests.
 - Added per-instance RDM identity and exclusive ESP8266 UART0 ownership;

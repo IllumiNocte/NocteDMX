@@ -42,6 +42,25 @@ An ordinary Python installation with the requirements above needs neither.
 
 ## Coverage and limits
 
+### ESP32-S3 preparation
+
+An experimental DMX-only path is prepared with
+`--chip esp32s3 --tests dmx` (or `output`/`input`). The default S3 build uses
+UART1 TX17/RX18 and direction pin 255 (disabled). It compiles for Arduino Core
+3.3.12 with USB CDC on boot and flashes the **merged** image at offset 0.
+Use esptool 4.x/5.x. `all` and `rdm` are rejected for S3 before opening ports.
+This path has not yet been run on S3 hardware. See [the bring-up guide](../../docs/esp32s3.md)
+for crossed 3.3-V UART wiring and the dedicated interactive bench sketch.
+The ESP8266 tests/defaults remain unchanged.
+Host-runner dry tests mock all serial/programming calls and verify image
+selection and the S3 RDM guard without Python hardware dependencies:
+
+```sh
+python -m unittest discover -s tests/hil -p 'test_*.py' -v
+```
+
+### ESP8266 tested scope
+
 - 24-slot DMX output: two identical changing fade channels and zero elsewhere.
 - 512-slot DMX input: every received channel is echoed and compared, including 512.
 - Constructed port and UART ownership, including an inactive second port destructor.

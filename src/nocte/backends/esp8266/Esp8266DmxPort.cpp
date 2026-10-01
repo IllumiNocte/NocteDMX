@@ -16,6 +16,8 @@
 */
 /**************************************************************************/
 
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -1553,3 +1555,5 @@ void LX8266DMX::sendRDMDiscoverBranchResponse( void ) {
 		delay(1);				//_rdm_task_mode is set to 0 (receive) after RDM packet is completely sent
 	}
 }
+
+#endif // ESP8266 backend only
