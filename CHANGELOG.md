@@ -2,6 +2,10 @@
 
 ## 0.1.0 - Unreleased
 
+- Added standalone native tests for the portable DMX/RDM core and GitHub
+  Actions jobs for core tests, Arduino library linting, and compilation of all
+  ESP8266 examples.
+
 - Renamed the uNode-maintained library to NocteDMX.
 - Added the canonical `<NocteDMX.h>` public entry point.
 - Added `nocte::dmx::Port` and `nocte::dmx::defaultPort()`.

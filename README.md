@@ -5,6 +5,7 @@
 **A portable, timing-aware DMX512-A and RDM library for embedded controllers.**
 
 [![Version](https://img.shields.io/badge/version-0.1.0-7259d6.svg)](CHANGELOG.md)
+[![CI](https://github.com/IllumiNocte/NocteDMX/actions/workflows/ci.yml/badge.svg)](https://github.com/IllumiNocte/NocteDMX/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-2f855a.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-ESP8266-e76f51.svg)](#platform-status)
 [![Status](https://img.shields.io/badge/status-active_development-f2b134.svg)](#project-status)
@@ -152,6 +153,27 @@ dmx.startRDM(
 | [`RdmResponder`](examples/RdmResponder/RdmResponder.ino) | A minimal discoverable fixture | — |
 
 See [the examples guide](examples/README.md) for wiring and usage notes.
+
+## Testing
+
+NocteDMX is tested independently from any consuming firmware:
+
+- native C++ tests exercise the portable DMX/RDM core, including boundary
+  handling, packet construction, checksum validation, timing failure flags,
+  and discovery decoding;
+- Arduino Lint checks library and release metadata;
+- every public example is compiled against ESP8266 Arduino Core 3.1.2.
+
+Run the portable tests locally with a CMake-compatible C++ compiler:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+ctest --test-dir build --build-config Release --output-on-failure
+```
+
+Hardware-in-the-loop tests are intentionally separate from CI. They require a
+real controller, RS-485 hardware, and the RP2040/RP2350 DMX test fixture.
 
 ## Architecture
 

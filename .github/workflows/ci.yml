@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "codex/**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-core:
+    name: Native core tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build --build-config Release --output-on-failure
+
+  arduino-lint:
+    name: Arduino library lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Run Arduino Lint
+        uses: arduino/arduino-lint-action@v3
+        with:
+          compliance: strict
+          library-manager: submit
+          project-type: library
+
+  esp8266-examples:
+    name: ESP8266 examples
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+        with:
+          version: "1.x"
+
+      - name: Install ESP8266 core and example dependencies
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls \
+            https://arduino.esp8266.com/stable/package_esp8266com_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp8266:esp8266@3.1.2
+          arduino-cli lib install "Adafruit NeoPixel@1.15.2"
+
+      - name: Compile all examples
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r sketch; do
+            echo "::group::${sketch}"
+            arduino-cli compile \
+              --fqbn esp8266:esp8266:generic \
+              --library "$GITHUB_WORKSPACE" \
+              --warnings all \
+              "$sketch"
+            echo "::endgroup::"
+          done < <(find examples -name '*.ino' -print | sort)
