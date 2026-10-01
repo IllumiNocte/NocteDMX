@@ -1,0 +1,29 @@
+{
+  "name": "NocteDMX",
+  "version": "0.1.0",
+  "description": "Portable DMX512-A and RDM library by IllumiNocte",
+  "keywords": [
+    "dmx",
+    "dmx512",
+    "rdm",
+    "lighting",
+    "rs485"
+  ],
+  "authors": [
+    {
+      "name": "Claude Heintz"
+    },
+    {
+      "name": "IllumiNocte",
+      "maintainer": true
+    }
+  ],
+  "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IllumiNocte/NocteDMX.git"
+  },
+  "frameworks": "arduino",
+  "platforms": "espressif8266",
+  "headers": "NocteDMX.h"
+}

@@ -1,0 +1,247 @@
+<div align="center">
+
+# NocteDMX
+
+**A portable, timing-aware DMX512-A and RDM library for embedded controllers.**
+
+[![Version](https://img.shields.io/badge/version-0.1.0-7259d6.svg)](CHANGELOG.md)
+[![License](https://img.shields.io/badge/license-BSD--3--Clause-2f855a.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-ESP8266-e76f51.svg)](#platform-status)
+[![Status](https://img.shields.io/badge/status-active_development-f2b134.svg)](#project-status)
+
+Built by [IllumiNocte](https://github.com/IllumiNocte) for reliable lighting
+control, embedded nodes, test equipment, and future multi-platform use.
+
+</div>
+
+---
+
+NocteDMX provides DMX input, DMX output, and bidirectional RDM through a small
+public API. Protocol handling is being separated from UART, interrupt, GPIO,
+and timing details so the same application code can later run on different
+microcontroller families.
+
+The first backend is the proven ESP8266 UART0 implementation used by the
+uNode project. ESP32-S3 is the next target.
+
+> [!IMPORTANT]
+> NocteDMX is currently an early development release. The ESP8266 backend is
+> usable, but the portable API and backend contract may still evolve before
+> version 1.0.
+
+## Highlights
+
+- DMX512-A input and continuous output
+- Atomic whole-frame updates and snapshots
+- Bidirectional RDM controller and responder operation
+- RDM discovery, GET, SET, broadcast, and response validation
+- Shared or separately controlled RS-485 `DE` and active-low `/RE` pins
+- No heap allocation in the timing-critical data path
+- Hardware-independent protocol core
+- Compatibility layer for existing `LXESP8266DMX` applications
+- Focused Arduino examples that use only the public NocteDMX API
+
+## Installation
+
+### PlatformIO
+
+Add the repository to `lib_deps`:
+
+```ini
+lib_deps =
+    https://github.com/IllumiNocte/NocteDMX.git
+```
+
+### Arduino IDE
+
+Download or clone the repository and place the `NocteDMX` directory in your
+Arduino `libraries` directory. Restart the IDE afterwards; the examples will
+appear below **File → Examples → NocteDMX**.
+
+## Quick start
+
+Include the public facade and obtain the port selected for the target:
+
+```cpp
+#include <NocteDMX.h>
+
+nocte::dmx::Port& dmx = nocte::dmx::defaultPort();
+```
+
+### DMX output
+
+```cpp
+constexpr uint8_t kDirectionPin = 5;
+constexpr uint16_t kChannels = nocte::dmx::kMinimumOutputSlots;
+
+uint8_t frame[kChannels] = {};
+
+void setup() {
+  dmx.setDirectionPin(kDirectionPin);
+  dmx.setFrame(frame, kChannels);
+  dmx.startOutput();
+}
+
+void loop() {
+  frame[0]++; // DMX address 1
+  dmx.setFrame(frame, kChannels);
+  delay(10);
+}
+```
+
+### DMX input
+
+Receive callbacks run in interrupt context. Keep them short and copy the frame
+later from `loop()`:
+
+```cpp
+volatile bool frameAvailable = false;
+uint8_t receivedFrame[nocte::dmx::kMaximumSlots] = {};
+
+void NOCTE_DMX_ISR_ATTR onDmxFrame(int slots) {
+  (void)slots;
+  frameAvailable = true;
+}
+
+void setup() {
+  dmx.setDirectionPin(5);
+  dmx.setDataReceivedCallback(onDmxFrame);
+  dmx.startInput();
+}
+
+void loop() {
+  if (!frameAvailable) {
+    return;
+  }
+
+  noInterrupts();
+  frameAvailable = false;
+  interrupts();
+
+  const uint16_t slots = dmx.copyFrame(
+      receivedFrame, sizeof(receivedFrame));
+  // Process the copied frame here.
+}
+```
+
+### Bidirectional RDM
+
+With `DE` and active-low `/RE` tied to one direction pin:
+
+```cpp
+dmx.startRDM(5, nocte::dmx::PortMode::Send);
+```
+
+With independently controlled transceiver pins:
+
+```cpp
+dmx.startRDM(
+    DE_PIN,
+    RE_NOT_PIN,
+    nocte::dmx::PortMode::Send);
+```
+
+## Examples
+
+| Example | Demonstrates | Extra dependency |
+| --- | --- | --- |
+| [`DmxOutputFade`](examples/DmxOutputFade/DmxOutputFade.ino) | Atomic DMX output frames | — |
+| [`DmxInput`](examples/DmxInput/DmxInput.ino) | Interrupt-safe DMX reception | — |
+| [`DmxNeoPixelInput`](examples/DmxNeoPixelInput/DmxNeoPixelInput.ino) | Mapping DMX to RGB pixels | Adafruit NeoPixel |
+| [`RdmControllerDiscovery`](examples/RdmControllerDiscovery/RdmControllerDiscovery.ino) | Discovery, GET, SET, and identify | — |
+| [`RdmResponder`](examples/RdmResponder/RdmResponder.ino) | A minimal discoverable fixture | — |
+
+See [the examples guide](examples/README.md) for wiring and usage notes.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    App[Application] --> API[NocteDMX public API]
+    API --> Core[Portable DMX and RDM core]
+    API --> Backend[Selected PHY backend]
+    Core <--> Backend
+    Backend --> HW[UART / PIO / DMA / GPIO / timers]
+    HW --> RS485[RS-485 transceiver]
+    RS485 --> Bus[DMX and RDM bus]
+```
+
+The portable core owns protocol limits, DMX frame operations, RDM packet
+construction, discovery decoding, and response validation. A PHY backend owns:
+
+- UART, PIO, timer, and DMA resources
+- pin routing and RS-485 direction control
+- BREAK and Mark-After-Break generation and detection
+- receive-idle, framing-error, and transmission-complete events
+- interrupt-safe timestamps and platform-specific critical sections
+
+For the detailed boundary and porting sequence, see
+[`docs/architecture.md`](docs/architecture.md).
+
+## Platform status
+
+| Target | Status | Notes |
+| --- | --- | --- |
+| ESP8266 | Supported | UART0 input/output and bidirectional RDM |
+| ESP32-S3 | Planned next | UART backend first; optional specialized backend later |
+| RP2040 / RP2350 | Roadmap | Suitable candidate for a PIO-based backend |
+| STM32 | Roadmap | Hardware-UART backend planned |
+| AVR | Exploratory | Subject to RAM and timer/UART constraints |
+
+## ESP8266 notes
+
+The current backend uses UART0:
+
+| Signal | ESP8266 pin |
+| --- | --- |
+| DMX transmit | GPIO1 / UART0 TX |
+| DMX receive | GPIO3 / UART0 RX |
+| RS-485 direction | User-selected GPIO |
+
+An external RS-485 transceiver is required. Never connect an ESP8266 GPIO
+directly to a DMX line.
+
+UART0 is occupied while DMX or RDM is active, so `Serial.begin()` and other
+UART0 logging must not be used at the same time. Depending on the board, the
+transceiver may also need to be disabled during flashing and boot.
+
+## Project status
+
+The current migration is intentionally incremental so the ESP8266 firmware
+continues to build after each step.
+
+- [x] Rename the maintained library to NocteDMX
+- [x] Add the stable `<NocteDMX.h>` facade
+- [x] Isolate the ESP8266 implementation as a backend
+- [x] Extract common constants, frame operations, and RDM packet validation
+- [x] Replace the historical examples with public-API examples
+- [ ] Move frame ownership and RDM transaction state into the shared core
+- [ ] Replace the remaining global-only assumptions with constructible ports
+- [ ] Add the ESP32-S3 UART backend
+- [ ] Validate both backends against the RP2040 HIL tester
+
+## Compatibility
+
+Existing applications can continue to include `LXESP8266UARTDMX.h` or
+`uNodeESP8266DMX.h` and use `LX8266DMX` plus the global `ESP8266DMX` object.
+New applications should use `<NocteDMX.h>` and the `nocte::dmx` namespace.
+
+The compatibility layer will remain during the migration and will only be
+removed in a separately announced major release.
+
+## Origin and attribution
+
+The ESP8266 backend began as the uNode-maintained fork of Claude Heintz's
+`LXESP8266DMX` library, based on upstream commit
+`760972edc8e9239692a7a47f3db275ac64f7d5b8` from 2022-04-11.
+
+The original copyright notices and BSD 3-Clause attribution are retained.
+ESP8266 UART helpers derived from the Arduino core retain their corresponding
+LGPL attribution in the source.
+
+## License
+
+NocteDMX is distributed under the [BSD 3-Clause License](LICENSE).
+
+Copyright © 2015–2017 Claude Heintz<br>
+Copyright © 2026 IllumiNocte
