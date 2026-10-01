@@ -57,7 +57,7 @@ void testDmxFrameCopying() {
   for (uint16_t index = 0; index < kMinimumOutputSlots; ++index) {
     channels[index] = static_cast<uint8_t>(index + 1);
   }
-  std::fill(frame, frame + sizeof(frame), 0xFF);
+  std::fill(frame, frame + sizeof(frame), static_cast<uint8_t>(0xFF));
 
   EXPECT_TRUE(core::replaceChannelData(
       frame, channels, kMinimumOutputSlots));
@@ -107,7 +107,7 @@ void testRdmPacketConstruction() {
   EXPECT_EQ(core::rdmWireLength(RDM_PKT_BASE_MSG_LEN),
             RDM_PKT_BASE_TOTAL_LEN);
 
-  std::fill(packet, packet + sizeof(packet), 0);
+  std::fill(packet, packet + sizeof(packet), static_cast<uint8_t>(0));
   core::initializeRdmResponderHeader(
       packet,
       RDM_PKT_BASE_MSG_LEN,
@@ -175,7 +175,10 @@ void testRdmDiscoveryDecoding() {
   using namespace nocte::dmx;
 
   uint8_t response[24] = {};
-  std::fill(response, response + 7, RDM_DISC_PREAMBLE);
+  std::fill(
+      response,
+      response + 7,
+      static_cast<uint8_t>(RDM_DISC_PREAMBLE));
   response[7] = RDM_DISC_PREAMBLE_SEPARATOR;
 
   const uint8_t uid[rdm::kUidSize] = {
@@ -196,7 +199,9 @@ void testRdmDiscoveryDecoding() {
   EXPECT_EQ(core::decodeRdmDiscoveryResponse(nullptr, 0, decoded),
             RdmDiscoveryResult::None);
 
-  response[23] ^= 0x01;
+  // Corrupt an encoded UID byte. Changing only a masked padding bit would
+  // leave the decoded UID unchanged and is therefore not a useful vector.
+  response[8] = 0;
   EXPECT_EQ(core::decodeRdmDiscoveryResponse(
                 response, sizeof(response), decoded),
             RdmDiscoveryResult::CollisionOrMalformed);
