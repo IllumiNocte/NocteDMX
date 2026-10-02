@@ -467,6 +467,9 @@ class LX8266DMX {
    /** @return Bit mask describing why the most recent response was rejected. */
    uint16_t lastRDMResponseValidationFailures( void ) const;
 
+   /** @return Bounded synchronous RDM transmit failures since construction. */
+   uint32_t rdmTransmitTimeoutCount() const { return _rdmTransmitTimeouts; }
+
    /** @return Number of response slots captured on the most recent transaction. */
    uint16_t lastRDMResponseLength( void ) const;
 
@@ -552,12 +555,17 @@ class LX8266DMX {
     // Only these fields and functions belong to the ESP8266 PHY scheduler.
     IRAM_ATTR void setTransceiverTransmit();
     IRAM_ATTR void setTransceiverReceive();
+    IRAM_ATTR void beginRdmTransmission(uint8_t firstByte);
+    IRAM_ATTR bool finishRdmTransmission(uint8_t finalByte);
+    void abortRdmTransmission();
     void startRDMConfigured(uint8_t direction);
     bool claimHardware();
     nocte::dmx::core::RdmCommandResult commandResult(bool received);
     const uint8_t* sourceUid() const;
 
     uint8_t _dmx_send_state;
+    bool _rdmTransmitFailed = false;
+    uint32_t _rdmTransmitTimeouts = 0;
     volatile uint8_t _dmx_read_state;
     uint8_t _interrupt_status;
     uint8_t _idle_count;

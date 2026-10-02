@@ -17,7 +17,8 @@ uint16_t buildRdmRequest(uint8_t* packet, const uint8_t* sourceUid,
     uint16_t pid, const uint8_t* data, uint16_t length, uint16_t subDevice) {
   if (!packet || !sourceUid || !destinationUid || (length && !data)
       || length > rdm::kMaximumParameterDataLength
-      || (commandClass != RDM_GET_COMMAND && commandClass != RDM_SET_COMMAND)) return 0;
+      || (commandClass != RDM_GET_COMMAND && commandClass != RDM_SET_COMMAND
+          && commandClass != RDM_DISCOVERY_COMMAND)) return 0;
   const uint8_t messageLength = static_cast<uint8_t>(rdm::kMinimumMessageLength + length);
   initializeRdmControllerHeader(packet, messageLength, sourceUid, transaction, 1, subDevice);
   memcpy(packet + RDM_IDX_DESTINATION_UID, destinationUid, rdm::kUidSize);
@@ -45,6 +46,15 @@ RdmCommandResult classifyRdmResponse(const uint8_t* response, uint16_t length,
       if (pdl == 2) status = RdmCommandStatus::Deferred;
       break;
     case RDM_RESPONSE_TYPE_ACK_OVERFLOW: status = RdmCommandStatus::Overflow; break;
+  }
+  if (response[RDM_IDX_CMD_CLASS] == RDM_DISC_COMMAND_RESPONSE) {
+    // DISC_MUTE / DISC_UN_MUTE: ACK control field plus optional binding UID.
+    // E1.20 permits only FORMAT_ERROR as a discovery NACK, no deferred/overflow.
+    if ((status == RdmCommandStatus::Ack
+         && ((pdl != 2 && pdl != 8) || response[24] != 0 || (response[25] & 0xF0)))
+        || status == RdmCommandStatus::Deferred || status == RdmCommandStatus::Overflow
+        || (status == RdmCommandStatus::Nack && (response[24] != 0 || response[25] != 1)))
+      status = RdmCommandStatus::InvalidResponse;
   }
   if (status == RdmCommandStatus::InvalidResponse) failures |= kRdmUnexpectedResponse;
   return {status, pdl, 0, failures};
@@ -205,6 +215,7 @@ RdmDiscoveryResult decodeRdmDiscoveryResponse(
     if (response[separator] == RDM_DISC_PREAMBLE_SEPARATOR) {
       break;
     }
+    if (response[separator] != 0xFE) return RdmDiscoveryResult::CollisionOrMalformed;
   }
 
   if (separator >= searchLength || responseLength != separator + 17) {
@@ -215,6 +226,9 @@ RdmDiscoveryResult decodeRdmDiscoveryResponse(
   const uint16_t encodedUidChecksum = rdmChecksum(encoded, 12);
   uint8_t payload[8];
   for (uint8_t index = 0; index < 8; ++index) {
+    if ((encoded[index * 2] & 0xAA) != 0xAA
+        || (encoded[index * 2 + 1] & 0x55) != 0x55)
+      return RdmDiscoveryResult::CollisionOrMalformed;
     payload[index] = encoded[index * 2] & encoded[index * 2 + 1];
   }
 

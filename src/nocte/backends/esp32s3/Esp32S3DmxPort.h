@@ -24,7 +24,7 @@ struct S3PortStatistics {
   uint32_t transmitTimeouts = 0;
 };
 
-// Experimental S3 UART backend: DMX and unicast RDM controller GET/SET.
+// Experimental S3 UART backend: DMX, RDM GET/SET and controller discovery.
 // Start/stop/configure from one foreground task. Callbacks are ISR-context.
 class Esp32S3UartPort {
  public:
@@ -32,10 +32,10 @@ class Esp32S3UartPort {
   ~Esp32S3UartPort();
   Esp32S3UartPort(const Esp32S3UartPort&) = delete;
   Esp32S3UartPort& operator=(const Esp32S3UartPort&) = delete;
-  // Legacy full RDM surface (discovery + responder) is not available yet.
+  // Full legacy RDM surface/responder is unavailable; typed discovery exists.
   static constexpr bool supportsRdm = false;
   static constexpr bool supportsRdmController = true;
-  static constexpr bool supportsRdmDiscovery = false;
+  static constexpr bool supportsRdmDiscovery = true;
   static constexpr bool supportsRdmResponder = false;
 
   bool setPins(int8_t txPin, int8_t rxPin);
@@ -54,8 +54,13 @@ class Esp32S3UartPort {
       uint16_t requestLength = 0, uint16_t subDevice = 0);
   core::RdmCommandResult setRdmParameter(const core::Uid& target, uint16_t pid,
       const uint8_t* data, uint16_t length, uint16_t subDevice = 0);
+  core::RdmDiscoveryResult discoverRdmBranch(const core::Uid& lower,
+      const core::Uid& upper, core::Uid* discovered);
+  core::RdmCommandResult setRdmDiscoveryMute(const core::Uid& target, bool mute);
   uint16_t copyRdmResponse(uint8_t* destination, uint16_t capacity) const;
-  core::RdmReceiveTiming rdmReceiveTiming() const { return rdmReceiver_.timing(); }
+  core::RdmReceiveTiming rdmReceiveTiming() const {
+    return discoveryCapture_.load() ? discoveryReceiver_.timing() : rdmReceiver_.timing();
+  }
   void stop();
   bool isActive() const { return active_.load(); }
   S3PortError lastError() const { return error_; }
@@ -73,10 +78,14 @@ class Esp32S3UartPort {
  private:
   bool initialize(bool receive);
   void releaseHardware();
-  void setDirection(bool transmit);
+  void IRAM_ATTR setDirection(bool transmit);
+  void IRAM_ATTR beginTransmit(); // Caller holds lock_; bounded BREAK/MAB only.
+  void IRAM_ATTR finishRdmTransmit(); // UART ISR, caller holds lock_.
   bool transmitFrame();
   bool pauseOutput();
-  core::RdmCommandResult transactRdm(uint16_t length);
+  enum class RdmTransaction : uint8_t { Normal, Discovery, Broadcast };
+  core::RdmCommandResult transactRdm(uint16_t length,
+      RdmTransaction kind = RdmTransaction::Normal);
   static void outputTask(void* argument);
   static void IRAM_ATTR uartInterrupt(void* argument);
   static void IRAM_ATTR rxEdgeInterrupt(void* argument);
@@ -96,18 +105,26 @@ class Esp32S3UartPort {
   core::DmxReceiver receiver_;
   S3PortStatistics statistics_;
   S3PortError error_ = S3PortError::None;
-  std::atomic<bool> active_{false};
-  std::atomic<bool> stopRequested_{false};
-  std::atomic<bool> pauseRequested_{false};
-  std::atomic<bool> outputPaused_{false};
-  std::atomic<bool> rdmCapture_{false};
-  std::atomic<bool> breakPending_{false};
-  std::atomic<bool> lowErrorPending_{false};
+  // Xtensa -Os can outline atomic<bool>::load() into flash. Word-sized flags
+  // compile to inline register operations, keeping backend ISR code in IRAM.
+  std::atomic<uint32_t> active_{0};
+  std::atomic<uint32_t> stopRequested_{0};
+  std::atomic<uint32_t> pauseRequested_{0};
+  std::atomic<uint32_t> outputPaused_{0};
+  std::atomic<uint32_t> rdmCapture_{0};
+  std::atomic<uint32_t> discoveryCapture_{0};
+  std::atomic<uint32_t> rdmTxPending_{0};
+  std::atomic<uint32_t> rdmTxDone_{0};
+  RdmTransaction rdmTransaction_ = RdmTransaction::Normal;
+  uint32_t rdmRequestEndUs_ = 0;
+  std::atomic<uint32_t> breakPending_{0};
+  std::atomic<uint32_t> lowErrorPending_{0};
   std::atomic<uint32_t> periodUs_{25000};
   bool receiving_ = false;
   bool rdmEnabled_ = false;
   core::Uid uid_{UINT64_C(0x7FF000000002)}; // Experimental MID; set your assigned UID.
   core::RdmReceiver rdmReceiver_;
+  core::RdmDiscoveryReceiver discoveryReceiver_;
   uint8_t rdmRequest_[rdm::kMaximumFrameSize] = {};
   uint8_t transaction_ = 0;
   uint32_t lastTransmitEndUs_ = 0;

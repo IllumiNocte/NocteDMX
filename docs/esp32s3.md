@@ -1,10 +1,12 @@
 # ESP32-S3 UART bring-up
 
-This is an **experimental, UART1-tested DMX input/output and RDM controller backend**.
+This is an **experimental, UART1/2-tested DMX input/output and RDM controller backend**.
 The [first hardware validation](esp32s3-validation.md) covers 15 cases with
 direct UART. It is not a standards-conformance or electrical qualification.
 Typed unicast RDM GET/SET is available (`supportsRdmController == true`).
-Discovery and responder operation are not yet available; `supportsRdm` remains
+Discovery/Mute/Unmute is implemented (`supportsRdmDiscovery == true`), with
+native and UART1/2 direct-UART coverage. Full qualification and responder operation
+is not yet available; `supportsRdm` remains
 false for the full legacy RDM surface. No standards certification is implied.
 See [the RDM validation record](esp32s3-rdm-validation.md) for results and limits.
 
@@ -51,6 +53,9 @@ The bench starts as a receiver. Send newline-terminated commands over USB:
 - `get HEX_PID [capacity]`: query the synthetic fixture UID `7FF0:52444D01`.
 - `set HEX_PID HEX_DATA`: send parameter bytes (e.g. `set f0 002b` for address 43).
 - `invalid` / `burst`: argument guards / 100 back-to-back DEVICE_INFO reads.
+- `branch LOWER_UID UPPER_UID`: inclusive discovery branch, UIDs as 12 hex digits.
+- `mute UID` / `unmute UID`: unicast or all/manufacturer broadcast.
+- `scan [transactionLimit]`: full discovery, 16-device table, default 512 transactions.
 - `stop`: release the UART and stop traffic.
 - `status`: report mode, active state, setup error, slot count, error counters
   and free heap.
@@ -108,6 +113,44 @@ repeated commands. It records actual timing estimates and a coverage gap when
 the fixture cannot physically generate a sub-8-us MAB. Cleanup independently
 returns the tester to idle/default RDM settings and S3 to input/verbose.
 
+### Select UART1 or UART2 without rewiring
+
+The bench defaults to UART1. All three S3 runners accept `--uart 1` or `--uart 2`;
+both route TX to GPIO17 and RX to GPIO18. For a UART2 comparison:
+
+```sh
+python tests/hil/run_s3_bench.py --uart 2 --esp-port S3_SERIAL_PORT \
+  --fixture-port RP2040_SERIAL_PORT
+python tests/hil/run_s3_rdm.py --uart 2 --no-flash --esp-port S3_SERIAL_PORT \
+  --fixture-port RP2040_SERIAL_PORT
+python tests/hil/run_s3_discovery.py --uart 2 --no-flash --esp-port S3_SERIAL_PORT \
+  --fixture-port RP2040_SERIAL_PORT
+```
+
+The first command builds/flashes; the others reuse that exact bench. Status JSON
+includes `uart`, and the runner rejects a missing or different UART before running
+the matrix. `--no-flash` never switches the peripheral by itself. Separate build
+directories and UART2 report suffixes preserve UART1 artifacts. Manual compilation
+can set `compiler.cpp.extra_flags=-DNOCTE_HIL_UART_NUMBER=2`; do not replace the
+core's `build.extra_flags` because they contain required native-USB definitions.
+CI compiles the bench for both UARTs. This is an alternative peripheral on the
+same pins, not a simultaneous two-port or GPIO-ownership qualification.
+
+### Two simultaneous instances: supported architecture, pending validation
+
+The backend already has per-UART ownership, GPIO conflict checks, per-instance
+buffers/locks/interrupt state and a separate output task for each transmitting
+port. Two instances can select UART1 and UART2 with distinct TX/RX and direction
+pins; constructing two default ports instead selects UART1 twice and the second
+start is rejected. Each physical DMX bus needs its own RS485 transceiver.
+
+This is not an additional implemented feature milestone: the architecture is
+present, but the tested UART1/2 matrices above use one peripheral at a time.
+The simultaneous-port test is deferred. It should cover different 512-slot
+patterns, independent start/stop, mixed input/output, resource conflicts and
+RDM on one port while the other continues DMX, followed by combined-load and
+timing checks. Do not claim two-port hardware qualification before that test.
+
 ## RDM controller contract
 
 Use `startRDM(255)` for this direct-UART bench, or tied/split direction pins with
@@ -128,6 +171,45 @@ or ACK_OVERFLOW aggregation is performed. ACK_TIMER_HI_RES is not implemented.
 `copyRdmResponse` and `rdmReceiveTiming` expose the last captured packet/estimates
 for diagnostics; inspect the result status before interpreting its data.
 
+### Discovery controller API
+
+`discoverRdmBranch(lower, upper, &uid)` broadcasts DISC_UNIQUE_BRANCH for an
+inclusive UID range. It returns `None`, `CollisionOrMalformed`, or `SingleDevice`.
+The fixed 32-byte discovery receiver observes any GPIO/UART activity, accepts
+0..7 FE preamble bytes and checks masks/checksum, SOP spacing and packet duration.
+Even activity without a decoded UART byte is a possible collision, never `None`.
+Capture waits at least 5800 us after the request and 176 us after the last slot;
+a 10-ms watchdog bounds pathological continuous traffic. Invalid arguments or
+transport failure return `CollisionOrMalformed`; this is not a retry policy.
+
+`setRdmDiscoveryMute(target, mute)` sends DISC_MUTE or DISC_UN_MUTE. Unicast ACK
+requires a 2- or 8-byte control field payload, with reserved flags zero. Deferred
+and overflow replies are rejected. Broadcast returns `RdmCommandStatus::Sent`
+(not ACK and `ok()` is false); the driver keeps MARK active because no response
+is expected. Normal typed GET/SET still rejects broadcast destinations.
+
+```cpp
+nocte::dmx::core::DeviceTable<32> devices;
+auto scan = nocte::dmx::core::scanRdmDevices(port, devices, 512);
+if (scan.status == nocte::dmx::core::RdmScanStatus::Complete) {
+  // Read devices.get(index, uid); muted devices still answer normal GET/SET.
+}
+```
+
+The portable full-scan helper has a fixed 49-range DFS stack, no heap/recursion,
+and a transaction budget including UNMUTE/MUTE. It unmutes first, confirms UIDs
+by MUTE ACK, repeats the same branch after muting, splits collisions, and tries
+an exact-UID MUTE at a malformed leaf. Table exhaustion, budget exhaustion and
+unresolved leaves are explicit non-complete results. Results can be partial;
+devices remain muted after a scan. The helper requires a transport implementing
+these two primitives; the ESP8266 legacy scan API is unchanged.
+
+Run `tests/hil/run_s3_discovery.py` with tester **0.4.17 or later** and the same port/programmer arguments as
+the GET/SET runner. Its 24 checks cover ranges, mute scope, GET while muted,
+malformed replies/recovery, budgets and 20 repeated scans. Native tests simulate
+multiple devices/collisions; one direct-UART responder cannot qualify electrical
+collisions. See the validation record for current hardware status.
+
 ## Backend contract and limitations
 
 - Defaults: UART1, TX17/RX18. A constructed port can select UART2 and other
@@ -138,6 +220,10 @@ for diagnostics; inspect the result status before interpreting its data.
 - Port storage and callbacks must be ISR-safe/internal RAM/IRAM; no PSRAM
   placement for the port object. Do not log, allocate or block in callbacks.
 - Start allocates the output task; no steady-state data-path allocation.
+- RDM EOP timestamp, capture activation and transceiver turnaround are handled
+  in the UART TX_DONE ISR, including a hardware-idle check, not after task wakeup.
+  BREAK/MAB have a bounded critical section; packet data uses interrupt-driven
+  FIFO refill. See the validation record for load-test scope and exclusions.
 - Output uses 250000 baud, 8N2, nominal 176-us BREAK and 16-us MAB, default
   40 Hz (configurable 1..44 Hz). A dedicated TX snapshot keeps updates from
   changing a partly transmitted frame and is copied **before BREAK**, so its
@@ -159,9 +245,18 @@ for diagnostics; inspect the result status before interpreting its data.
 
 ## Next hardware steps
 
+`tests/hil/run_s3_load.py` supplies repeatable synthetic dual-core computation
+and WLAN AP/active-scan profiles, with 512-slot input/output and GET/SET/discovery.
+It records failures rather than treating unloaded passes as stress qualification.
+The [RDM validation record](esp32s3-rdm-validation.md) documents the original
+CPU-load TX-end issue, the interrupt-driven fix and separate retest results.
+A sampled output-MAB anomaly now has a separate PIO/DMA retest; this is not a full
+production timing qualification. AP/scans are not sustained external UDP traffic.
+
 1. Check idle level, 24/512-channel output and full-frame input against the RP2040.
 2. Measure BREAK/MAB, refresh, inter-slot gaps and last-stop-bit completion.
 3. Probe short/long BREAK, errors, oversized packets, recovery and start/stop.
 4. Repeat under USB/CPU/Wi-Fi load; check GPIO/UART interrupt ordering at BREAK.
-5. Add S3 discovery/Mute/Unmute on the bounded controller transport, then responder support.
+5. Repeat controller/discovery tests under load and with simultaneous independent ports;
+   responder support is separate. UART1 and UART2 have passed separately on direct UART.
 6. Qualify RDM with real RS-485 transceivers, direction control and collisions.

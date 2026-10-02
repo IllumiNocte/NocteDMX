@@ -7,7 +7,7 @@ import sys
 import time
 
 from run_smoke import Fixture, build_and_flash, require
-from run_s3_bench import Bench
+from run_s3_bench import Bench, verify_uart, uart_report_path, heap_tolerance
 
 
 def run_cases(fixture, bench, report):
@@ -120,35 +120,39 @@ def run_cases(fixture, bench, report):
     burst = bench.command("burst", "burst")
     require(burst["acked"] == 100 and burst["flags"] == 0,
             "Back-to-back foreground commands failed: " + repr(burst))
-    require(burst["afterHeap"] >= burst["beforeHeap"] - 128, "Heap fell across foreground burst")
+    require(burst["afterHeap"] >= burst["beforeHeap"] - heap_tolerance(report), "Heap fell across foreground burst")
     record("100_back_to_back_foreground_commands", burst)
     baseline = bench.command("status")
     for _ in range(100):
         ack(get(0x0060), 19)
     after = bench.command("status")
-    require(after["freeHeap"] >= baseline["freeHeap"] - 128, "Heap fell across 100 transactions")
+    report["host_paced_heap"] = {"before": baseline, "after": after}
+    require(after["freeHeap"] >= baseline["freeHeap"] - heap_tolerance(report), "Heap fell across 100 transactions")
     require(after["txTimeouts"] == 0, "UART transmit timeout")
     require(after["txFrames"] > baseline["txFrames"], "DMX output did not resume between commands")
     record("100_transactions_resume_dmx_stable_heap", {"before": baseline, "after": after})
     report["fixture_after"] = fixture.command(cmd="rdm", action="status")
 
 
-def main():
+def main(cases=run_cases, default_report="build/hil/s3-rdm-report.json"):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--esp-port", required=True)
     parser.add_argument("--fixture-port", required=True)
     parser.add_argument("--arduino-cli", default="arduino-cli")
     parser.add_argument("--esptool-executable")
+    parser.add_argument("--uart", type=int, choices=(1, 2), default=1,
+                        help="S3 UART peripheral; TX17/RX18 wiring stays unchanged")
     parser.add_argument("--no-flash", action="store_true")
-    parser.add_argument("--report", default="build/hil/s3-rdm-report.json")
+    parser.add_argument("--report")
     args = parser.parse_args()
+    args.report = args.report or uart_report_path(default_report, args.uart)
     if args.esp_port.lower() == args.fixture_port.lower():
         parser.error("S3 and fixture ports must differ")
     args.chip, args.direction_pin = "esp32s3", 255
     args.fqbn = "esp32:esp32:esp32s3:CDCOnBoot=cdc"
     args.esptool_script = args.serial_module_path = None
     report = {"time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-              "tests": {}, "ok": False}
+              "uart": args.uart, "tests": {}, "ok": False}
     fixture = bench = None
     try:
         fixture = Fixture(args.fixture_port)
@@ -157,7 +161,8 @@ def main():
         if not args.no_flash:
             build_and_flash(args, fixture, "extras/hil/Esp32S3UartBench")
         bench = Bench(args.esp_port)
-        run_cases(fixture, bench, report)
+        report["bench"] = verify_uart(bench, args.uart)
+        cases(fixture, bench, report)
         report["ok"] = True
     except Exception as error:
         report["error"] = str(error)

@@ -62,11 +62,23 @@ def build_and_flash(args, fixture, sketch):
     root = Path(__file__).resolve().parents[2]
     source = root / sketch
     build = root / "build" / "hil" / args.chip / source.name
+    flags = "compiler.cpp.extra_flags=-DNOCTE_HIL_DIRECTION_PIN=" + str(args.direction_pin)
+    extra_flags = getattr(args, "extra_build_flags", None)
+    if extra_flags:
+        flags += " " + extra_flags
+    variant = getattr(args, "build_variant", None)
+    if variant:
+        build = build / variant
+    if args.chip == "esp32s3" and hasattr(args, "uart"):
+        if args.uart not in (1, 2):
+            raise ValueError("S3 bench supports UART1 or UART2 only")
+        flags += " -DNOCTE_HIL_UART_NUMBER=" + str(args.uart)
+        build = build / ("uart" + str(args.uart))
     subprocess.run([
         args.arduino_cli, "compile", "--fqbn", args.fqbn,
         "--library", str(root), "--warnings", "all",
         "--build-path", str(build),
-        "--build-property", "compiler.cpp.extra_flags=-DNOCTE_HIL_DIRECTION_PIN=" + str(args.direction_pin),
+        "--build-property", flags,
         str(source),
     ], check=True)
     executable = getattr(args, "esptool_executable", None)

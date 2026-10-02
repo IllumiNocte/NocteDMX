@@ -2,6 +2,79 @@
 
 ## 0.1.0 - Unreleased
 
+- Hardened ESP8266 controller BREAK/MAB and reserved-final-byte/RX handoff in
+  short IRAM windows with forced-inline PS restoration. Bulk FIFO work remains
+  interruptible, with explicit timeout/recovery counters and partial-discovery
+  reporting on TX failure. Legacy DMX scheduling and protocol limits remain
+  unchanged; EOP remains a final-slot estimate, not S3-style TX_DONE capture.
+- Added an independent ESP8266 four-profile IRQ/foreground/AP-scan load bench,
+  finite stress sweeps, cumulative fault checks, separated build variants and
+  host rejection tests. Extended the ELF IRAM guard/CI to the ESP8266, including
+  the core interrupt-lock destructor outlining regression.
+- ESP8266 at 80 MHz passes output PIO/DMA measurement with tester 0.4.18:
+  173 windows, 961 complete pairs, BREAK 102.25..102.5 us, MAB 44.25..48 us,
+  no short pulses/stalls/timeouts and exact quiescent heap recovery. Hardware
+  runner/core tests pass (54 host tests); finite-window, console/responder,
+  physical RS485, cache-off/NMI and external-UDP limitations remain explicit.
+- ESP8266 RDM passes all four 20-second profiles with cumulative failure flags:
+  94 DEVICE_INFO cycles, Identify SET/read-back/restore, 94 maximum-PDL SET/NACK
+  checks and 18 discovery/Mute cycles; zero failure flags/TX timeouts and
+  quiescent heap 48032 -> 48032 bytes. The console recovery interval is required
+  for a meaningful final 512-slot guard, not a relaxation of wire timing limits.
+
+- Added independent S3 PIO/DMA output timing windows using RP2040 tester 0.4.18,
+  hardware reference/short-MAB self-tests, load telemetry and host rejection
+  tests. The finite capture excludes incomplete boundary pulses and rejects
+  PIO/DMA stalls; no GPIO IRQ timestamps or relaxed timing assertions.
+- Both UARTs pass the four-profile PIO/DMA output retest: 5394 complete framing
+  pairs, MAB 16.25..16.75 us, no short MAB/stall/timeout. The historical GPIO-ISR
+  7-us sample was not reproduced; finite windows and shared-clock calibration
+  limits remain explicit. Native decoder tests and 42 host tests pass.
+
+- Hardened S3 RDM request EOP/receive/DE//RE handoff through UART TX_DONE in
+  IRAM, with actual FIFO/FSM-idle confirmation, bounded BREAK/MAB protection,
+  direct GPIO writes, explicit timeout disarming and word-sized ISR flags.
+  Public protocol/API behavior and acceptance thresholds are unchanged.
+- Corroborate additional RDM GPIO low-pulse candidates with UART BREAK/framing
+  status, preventing timestamp jitter from flushing valid response bytes; true
+  short/long BREAKs still fail strict validation. Added native pulse regressions
+  and an ELF IRAM/flash-dependency build guard with host tests and CI integration.
+- Added delayed-foreground timestamp core regressions and bounded WLAN transient
+  heap accounting with a tighter separate 128-byte quiescent leak check.
+- Final hardened UART1/2 load retests have no GET/SET/discovery protocol errors;
+  all combined-load functional matrices pass, no TX timeout and exact quiescent
+  heap recovery. UART2 passes overall; UART1 retains one sampled 7-us output-MAB
+  failure requiring independent timing capture. Output tests also check
+  completed-frame minima so intermittent failures cannot hide between samples.
+  Native tests and 37 host tests pass; full electrical/cache-off qualification
+  and ESP8266-specific hardening remain separate work.
+
+- Added a standalone S3 dual-core CPU/AP-scan load runner, explicit load
+  telemetry, host-side rejection tests and load cleanup. Initial CPU testing
+  exposed RDM TX-end timestamp/turnaround sensitivity; documented the failure
+  without relaxing protocol timing checks or claiming loaded qualification.
+- Pre-hardening UART2 load results: all eight 30-second full-frame DMX input/output phases
+  and the 15-case DMX matrix pass; RDM passes without CPU load and with WLAN
+  AP/scans alone, but fails CPU/combined profiles and follow-up RDM matrices.
+  Zero TX timeouts, exact quiescent heap recovery, 26 host dry tests pass.
+
+- Made S3 HIL UART selection explicit (`--uart 1/2`, TX17/RX18 unchanged), with
+  firmware-status verification, separate builds/reports, dry tests rejecting
+  mismatched firmware, and UART2 bench compilation in CI.
+- Repeated the direct-UART matrices on S3 UART2 with tester 0.4.17: 15 DMX
+  cases, 37 RDM checks plus the short-MAB fixture probe, and 24 discovery checks
+  pass. Heap is unchanged across repeated commands/scans and 100 lifecycle
+  cycles; UART1 remains the default. No UART backend changes were needed.
+
+- Added S3 DISC_UNIQUE_BRANCH and Mute/Unmute with bounded BREAK-less capture,
+  GPIO-only collision detection, strict discovery encoding/control-field checks,
+  and no-response broadcast MARK sequencing (`Sent`, never a fabricated ACK).
+- Added a portable fixed-stack full-discovery helper with explicit capacity,
+  transaction-budget and unresolved-device results, plus native multi-device
+  collision/leaf tests and a dedicated 24-point direct-UART discovery HIL matrix.
+  Fixed tester edge pairing/early-DUB deadlock (tester 0.4.17 required); documented
+  variable early-response fixture timing instead of claiming an unmeasured fault.
+
 - Added S3 unicast RDM controller GET/SET with frame-boundary DMX pause/resume,
   persistent output task, bounded receive deadlines and full UART-idle release.
 - Added a portable normal RDM response receiver with fixed storage and native

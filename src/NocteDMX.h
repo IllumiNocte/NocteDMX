@@ -8,4 +8,5 @@
 #include "nocte/core/RdmPacket.h"
 #include "nocte/core/Uid.h"
 #include "nocte/core/DeviceTable.h"
+#include "nocte/core/RdmDiscovery.h"
 #include "nocte/NocteDmxPort.h"

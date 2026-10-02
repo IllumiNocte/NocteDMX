@@ -359,6 +359,8 @@ void uart_uninit_rdm(void) {
 #define RDM_CONTROLLER_MAB_US 20
 #define RDM_CONTROLLER_TX_DRAIN_US 60
 #define RDM_UART_FIFO_FULL_LEVEL 0x7f
+#define RDM_TRANSMIT_TIMEOUT_US 35000
+#define RDM_TRANSMIT_TAIL_TIMEOUT_US 120
 #define RDM_DISCOVERY_RESPONSE_WAIT_MS 6
 #define RDM_CONTROLLER_RESPONSE_START_WAIT_US 3000
 // E1.20 permits up to 2.8 ms at the controller before the response and up to
@@ -1086,12 +1088,81 @@ void LX8266DMX::setTaskReceive( void ) {		// only valid if connection started us
     setTransceiverReceive();
 }
 
+namespace {
+// The core's size-optimized InterruptLock destructor may be outlined into
+// flash. Force both operations inline in our two IRAM timing windows.
+class RdmTimingInterruptLock {
+public:
+	__attribute__((always_inline)) RdmTimingInterruptLock() : saved(xt_rsil(15)) {}
+	__attribute__((always_inline)) ~RdmTimingInterruptLock() { xt_wsr_ps(saved); }
+	RdmTimingInterruptLock(const RdmTimingInterruptLock&) = delete;
+	RdmTimingInterruptLock& operator=(const RdmTimingInterruptLock&) = delete;
+private:
+	uint32_t saved;
+};
+}
+
+void LX8266DMX::beginRdmTransmission(uint8_t firstByte) {
+	RdmTimingInterruptLock lock;
+	// Mask only the framing window, not the data packet. Queuing the start
+	// code before unlocking prevents an IRQ from arbitrarily extending MAB.
+	USC0(UART0) |= (1 << UCBRK);
+	delayMicroseconds(RDM_CONTROLLER_BREAK_US);
+	USC0(UART0) &= ~(1 << UCBRK);
+	delayMicroseconds(RDM_CONTROLLER_MAB_US);
+	USF(0) = firstByte;
+}
+
+bool LX8266DMX::finishRdmTransmission(uint8_t finalByte) {
+	RdmTimingInterruptLock lock;
+	// Reserve the final byte and observe its FIFO-to-shifter transition
+	// without IRQ latency, not a possibly stale FIFO-empty observation.
+	const uint32_t started = micros();
+	if (((USS(UART0) >> USTXC) & 0xff) > 1) return false;
+	USF(0) = finalByte;
+	while ((USS(UART0) >> USTXC) & 0xff) {
+		if (static_cast<uint32_t>(micros() - started) >= RDM_TRANSMIT_TAIL_TIMEOUT_US)
+			return false;
+	}
+	const uint32_t finalSlotStartedUs = micros();
+	delayMicroseconds(RDM_CONTROLLER_TX_DRAIN_US);
+	_rdm.requestEndUs = finalSlotStartedUs + RDM_SLOT_WIRE_US;
+	// Drop echo/stale data BEFORE arming capture and releasing DE. A later
+	// foreground observation must never flush the earliest legal response.
+	USC0(UART0) |= (1 << UCRXRST);
+	USC0(UART0) &= ~(1 << UCRXRST);
+	USIC(UART0) = (1 << UIFF) | (1 << UITO) | (1 << UIBD);
+	_frames.receivedLength = 0;
+	_frames.expectedLength = DMX_MAX_FRAME;
+	_dmx_read_state = _rdm.handled ? DMX_READ_STATE_RECEIVING : DMX_READ_STATE_IDLE;
+	_rdm_task_mode = DMX_TASK_RECEIVE;
+	USIE(UART0) |= (1 << UIFF) | (1 << UITO) | (1 << UIBD);
+	setTransceiverReceive();
+	return true;
+}
+
+void LX8266DMX::abortRdmTransmission() {
+	esp8266::InterruptLock lock;
+	_rdmTransmitFailed = true;
+	++_rdmTransmitTimeouts;
+	USC0(UART0) &= ~(1 << UCBRK);
+	uart_tx_flush();
+	uart_rx_flush();
+	USIC(UART0) = (1 << UIFF) | (1 << UITO) | (1 << UIBD) | (1 << UIFE);
+	_frames.receivedLength = 0;
+	_dmx_read_state = DMX_READ_STATE_IDLE;
+	_rdm_task_mode = DMX_TASK_RECEIVE;
+	USIE(UART0) |= (1 << UIFF) | (1 << UITO) | (1 << UIBD);
+	setTransceiverReceive();
+}
+
 void LX8266DMX::sendRawRDMPacket( uint16_t len ) {		// only valid if connection started using startRDM()
 	if (_interrupt_status != ISR_RDM_ENABLED) return;
 	if (len < RDM_PKT_BASE_TOTAL_LEN || len > RDM_MAX_FRAME) {
 		return;
 	}
 	_rdm.transmitLength = len;
+	_rdmTransmitFailed = false;
 	// calculate checksum:  len should include 2 bytes for checksum at the end
 	uint16_t checksum = rdmChecksum(
 		_rdm.request,
@@ -1109,6 +1180,7 @@ void LX8266DMX::sendRawRDMPacket( uint16_t len ) {		// only valid if connection 
 		// byte-per-interrupt path can develop large inter-slot gaps under Wi-Fi
 		// load and was observed truncating consecutive broadcast 0xFF bytes.
 		USIE(UART0) &= ~(1 << UIFE);
+		USIE(UART0) &= ~((1 << UIFF) | (1 << UITO) | (1 << UIBD));
 		setTransceiverTransmit();
 		delayMicroseconds(100);
 
@@ -1118,31 +1190,32 @@ void LX8266DMX::sendRawRDMPacket( uint16_t len ) {		// only valid if connection 
 		uart_tx_flush();
 		uart_set_baudrate(UART0, DMX_DATA_BAUD);
 		uart_set_config(UART0, FORMAT_8N2);
-		USC0(UART0) |= (1 << UCBRK);
-		delayMicroseconds(RDM_CONTROLLER_BREAK_US);
-		USC0(UART0) &= ~(1 << UCBRK);
-		delayMicroseconds(RDM_CONTROLLER_MAB_US);
+		beginRdmTransmission(_rdm.request[0]);
+		const uint32_t started = micros();
 
-		for (uint16_t index = 0; index < _rdm.transmitLength; index++) {
+		for (uint16_t index = 1; index + 1 < _rdm.transmitLength; index++) {
 			while (((USS(UART0) >> USTXC) & 0xff)
-					>= RDM_UART_FIFO_FULL_LEVEL) {}
+					>= RDM_UART_FIFO_FULL_LEVEL) {
+				if (static_cast<uint32_t>(micros() - started) >= RDM_TRANSMIT_TIMEOUT_US) {
+					abortRdmTransmission();
+					return;
+				}
+			}
 			USF(0) = _rdm.request[index];
 		}
 
-		while ((USS(UART0) >> USTXC) & 0xff) {}
-		const uint32_t finalSlotStartedUs = micros();
-		// FIFO empty precedes the final stop bits leaving the shift register.
-		delayMicroseconds(RDM_CONTROLLER_TX_DRAIN_US);
-		_rdm.requestEndUs =
-			finalSlotStartedUs + RDM_SLOT_WIRE_US;
-
-		_frames.receivedLength = 0;
-		_frames.expectedLength = DMX_MAX_FRAME;
-		_dmx_read_state = _rdm.handled
-			? DMX_READ_STATE_RECEIVING
-			: DMX_READ_STATE_IDLE;
-		_rdm_task_mode = DMX_TASK_RECEIVE;
-		setTransceiverReceive();
+		// Bulk drain stays interruptible. Only the final <=3 wire slots and
+		// direction handoff are protected (normally <=148 us, bounded).
+		while (((USS(UART0) >> USTXC) & 0xff) > 1) {
+			if (static_cast<uint32_t>(micros() - started) >= RDM_TRANSMIT_TIMEOUT_US) {
+				abortRdmTransmission();
+				return;
+			}
+		}
+		if (!finishRdmTransmission(_rdm.request[_rdm.transmitLength - 1])) {
+			abortRdmTransmission();
+			return;
+		}
 	}
 	
 	while ( _rdm_task_mode ) {	//wait for packet to be sent and listening to start
@@ -1192,6 +1265,13 @@ uint8_t LX8266DMX::sendRDMDiscoveryPacket(const UID& lower, const UID& upper, UI
 	// on the same proven send path as normal controller requests and prevents
 	// stale historical packet-length constants from diverging from byte 2.
 	sendRawRDMPacket(_rdm.request[RDM_IDX_PACKET_SIZE] + 2);
+	if (_rdmTransmitFailed) {
+		_rdm.discoveryLength = 0;
+		_rdm.handled = 0;
+		resetFrame();
+		restoreTaskSendDMX();
+		return RDM_PARTIAL_DISCOVERY;
+	}
 	delay(RDM_DISCOVERY_RESPONSE_WAIT_MS);
 
 	const uint16_t receivedLength = _frames.receivedLength;
@@ -1288,6 +1368,13 @@ uint8_t LX8266DMX::sendRDMControllerPacket( void ) {
 	_rdm.validationFailures = 0;
 	_rdm.responseLength = 0;
 	sendRawRDMPacket(_rdm.request[2]+2);
+	if (_rdmTransmitFailed) {
+		_rdm.validationFailures = nocte::dmx::core::kRdmReceiveError;
+		_rdm.handled = 0;
+		resetFrame();
+		restoreTaskSendDMX();
+		return 0;
+	}
 
 	// Use microsecond deadlines so the 3 ms E1.20 response-start window cannot
 	// lose almost a millisecond at a millis() tick boundary.

@@ -94,6 +94,7 @@ class RdmReceiver {
   const uint8_t* data() const { return bytes_; }
   uint16_t length() const { return length_; }
   uint32_t lastByteUs() const { return lastByte_; }
+  NOCTE_RDM_INLINE bool hasBreak() const { return breakSeen_; }
   RdmReceiveTiming timing() const {
     return {breakSeen_ ? breakEnd_ - breakStart_ : 0, mabUs_,
       breakSeen_ ? breakStart_ - requestEnd_ : 0, maximumInterval_,
@@ -105,6 +106,72 @@ class RdmReceiver {
   uint32_t requestEnd_ = 0, breakStart_ = 0, breakEnd_ = 0;
   uint32_t lastByte_ = 0, maximumInterval_ = 0, mabUs_ = 0, lowStart_ = 0;
   bool breakSeen_ = false, firstStartSeen_ = false, closed_ = false, lowActive_ = false;
+};
+
+// Discovery has no BREAK and no normal RDM header. Even a GPIO pulse or a
+// framing error with no decoded byte indicates possible responders, not None.
+class RdmDiscoveryReceiver {
+ public:
+  NOCTE_RDM_INLINE void begin(uint32_t requestEndUs) {
+    requestEnd_ = requestEndUs;
+    firstStart_ = lastByte_ = maximumInterval_ = 0;
+    length_ = failures_ = 0;
+    activity_ = closed_ = false;
+  }
+  NOCTE_RDM_INLINE void onActivity(uint32_t nowUs) {
+    if (closed_) return;
+    if (!activity_) {
+      firstStart_ = nowUs;
+      if (nowUs - requestEnd_ < 176) failures_ |= kRdmResponseTooEarly;
+      if (nowUs - requestEnd_ > 2800) failures_ |= kRdmResponseTooLate;
+    }
+    activity_ = true;
+  }
+  NOCTE_RDM_INLINE void onError() { activity_ = true; failures_ |= kRdmReceiveError; }
+  NOCTE_RDM_INLINE void onByte(uint8_t value, uint32_t endUs) {
+    if (closed_) return;
+    // GPIO edge timestamps supply SOP. A missing edge is not a valid capture.
+    if (!activity_) { onActivity(endUs); failures_ |= kRdmInvalidPhysicalTiming; }
+    if (length_) {
+      const uint32_t interval = endUs - lastByte_;
+      if (interval > maximumInterval_) maximumInterval_ = interval;
+      if (interval > 2144) failures_ |= kRdmInterSlotTimeout;
+    }
+    lastByte_ = endUs;
+    if (endUs - firstStart_ > 2900) failures_ |= kRdmPacketTimeExceeded;
+    if (length_ < sizeof(bytes_)) bytes_[length_++] = value;
+    else failures_ |= kRdmLengthMismatch;
+  }
+  NOCTE_RDM_INLINE bool poll(uint32_t nowUs) {
+    // E1.20 table 3-1: DUB request EOP -> next controller packet >=5800 us.
+    // Also retain >=176 us after the last response slot. Faulty continuous
+    // traffic is bounded by an absolute watchdog, never an unbounded wait.
+    if (nowUs - requestEnd_ >= 10000) {
+      failures_ |= kRdmFrameNotClosed;
+      closed_ = true;
+    } else if (nowUs - requestEnd_ >= 5800 && (!length_ || nowUs - lastByte_ >= 176)) {
+      closed_ = true;
+    }
+    return closed_;
+  }
+  RdmDiscoveryResult result(uint8_t* uid) const {
+    if (!closed_ || failures_) return RdmDiscoveryResult::CollisionOrMalformed;
+    if (!activity_) return RdmDiscoveryResult::None;
+    if (!length_) return RdmDiscoveryResult::CollisionOrMalformed;
+    return decodeRdmDiscoveryResponse(bytes_, length_, uid);
+  }
+  uint16_t failures() const { return failures_; }
+  uint16_t length() const { return length_; }
+  const uint8_t* data() const { return bytes_; }
+  RdmReceiveTiming timing() const {
+    return {0, 0, activity_ ? firstStart_ - requestEnd_ : 0, maximumInterval_,
+      length_ ? lastByte_ - firstStart_ : 0};
+  }
+ private:
+  uint8_t bytes_[32] = {};
+  uint16_t length_ = 0, failures_ = 0;
+  uint32_t requestEnd_ = 0, firstStart_ = 0, lastByte_ = 0, maximumInterval_ = 0;
+  bool activity_ = false, closed_ = false;
 };
 
 } } }

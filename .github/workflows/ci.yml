@@ -33,7 +33,7 @@ jobs:
         run: ctest --test-dir build --build-config Release --output-on-failure
 
       - name: Check hardware runner syntax
-        run: python3 -m py_compile tests/hil/run_smoke.py tests/hil/run_s3_bench.py tests/hil/run_s3_rdm.py
+        run: python3 -m py_compile tests/hil/run_smoke.py tests/hil/run_s3_bench.py tests/hil/run_s3_rdm.py tests/hil/run_s3_discovery.py tests/hil/run_s3_load.py tests/hil/run_s3_pio_timing.py tests/hil/run_esp8266_load.py
 
       - name: Test hardware runner without hardware
         run: python3 -m unittest discover -s tests/hil -p 'test_*.py' -v
@@ -79,13 +79,33 @@ jobs:
           set -euo pipefail
           while IFS= read -r sketch; do
             echo "::group::${sketch}"
+            build_args=()
+            if [[ "$sketch" == "extras/hil/ControllerSmoke/ControllerSmoke.ino" ]]; then
+              build_args=(--build-path build/ci-esp8266-controller)
+            fi
             arduino-cli compile \
               --fqbn esp8266:esp8266:generic \
               --library "$GITHUB_WORKSPACE" \
               --warnings all \
+              "${build_args[@]}" \
               "$sketch"
             echo "::endgroup::"
           done < <(find examples extras/hil -name '*.ino' ! -path 'extras/hil/Esp32S3UartBench/*' -print | sort)
+
+      - name: Guard ESP8266 RDM framing and handoff IRAM dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          objdump="$(find "$HOME/.arduino15/packages/esp8266/tools" -name xtensa-lx106-elf-objdump -type f -print -quit)"
+          python3 tests/hil/check_s3_iram.py --chip esp8266 --objdump "$objdump" \
+            --elf build/ci-esp8266-controller/ControllerSmoke.ino.elf
+
+      - name: Compile ESP8266 output-only load variant
+        run: |
+          arduino-cli compile --fqbn esp8266:esp8266:generic \
+            --library "$GITHUB_WORKSPACE" --warnings all \
+            --build-property "compiler.cpp.extra_flags=-DNOCTE_HIL_RDM=0 -DNOCTE_HIL_DIRECTION_PIN=255" \
+            extras/hil/Esp8266LoadBench
 
   esp32s3-dmx:
     name: ESP32-S3 experimental DMX/RDM controller
@@ -123,3 +143,18 @@ jobs:
               "$sketch"
             echo "::endgroup::"
           done
+      - name: Compile UART2 DMX/RDM bench
+        run: |
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc \
+            --library "$GITHUB_WORKSPACE" \
+            --build-path build/ci-s3-uart2 \
+            --build-property "compiler.cpp.extra_flags=-DNOCTE_HIL_DIRECTION_PIN=255 -DNOCTE_HIL_UART_NUMBER=2" \
+            --warnings all extras/hil/Esp32S3UartBench
+      - name: Guard S3 timing ISR IRAM placement and flash dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          objdump="$(find "$HOME/.arduino15/packages/esp32/tools" -name xtensa-esp32s3-elf-objdump -type f -print -quit)"
+          python3 tests/hil/check_s3_iram.py --objdump "$objdump" \
+            --elf build/ci-s3-uart2/Esp32S3UartBench.ino.elf

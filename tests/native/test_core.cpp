@@ -12,6 +12,8 @@
 #include <nocte/core/PortState.h>
 #include <nocte/core/DmxReceiver.h>
 #include <nocte/core/RdmReceiver.h>
+#include <nocte/core/UartBreak.h>
+#include <nocte/core/RdmDiscovery.h>
 #include <rdm/rdm_utility.h>
 
 namespace {
@@ -201,6 +203,13 @@ void testRdmDiscoveryDecoding() {
                 response, sizeof(response), decoded),
             RdmDiscoveryResult::SingleDevice);
   EXPECT_TRUE(std::memcmp(decoded, uid, sizeof(uid)) == 0);
+  for (uint16_t removed = 0; removed <= 7; ++removed)
+    EXPECT_EQ(core::decodeRdmDiscoveryResponse(response + removed, 24 - removed, decoded),
+              RdmDiscoveryResult::SingleDevice);
+  response[0] = 0xFD;
+  EXPECT_EQ(core::decodeRdmDiscoveryResponse(response, 24, decoded),
+            RdmDiscoveryResult::CollisionOrMalformed);
+  response[0] = 0xFE;
   EXPECT_EQ(core::decodeRdmDiscoveryResponse(nullptr, 0, decoded),
             RdmDiscoveryResult::None);
 
@@ -213,6 +222,155 @@ void testRdmDiscoveryDecoding() {
   EXPECT_EQ(core::decodeRdmDiscoveryResponse(
                 response, sizeof(response) - 1, decoded),
             RdmDiscoveryResult::CollisionOrMalformed);
+}
+
+void testDiscoveryReceiverAndScan() {
+  using namespace nocte::dmx::core;
+  uint8_t wire[24];
+  std::fill(wire, wire + 7, static_cast<uint8_t>(0xFE));
+  wire[7] = 0xAA;
+  const Uid target(UINT64_C(0x7FF052444D01));
+  for (unsigned i = 0; i < 6; ++i) encodeDiscoveryByte(target.data()[i], wire + 8 + 2 * i);
+  const auto checksum = rdmChecksum(wire + 8, 12);
+  encodeDiscoveryByte(static_cast<uint8_t>(checksum >> 8), wire + 20);
+  encodeDiscoveryByte(static_cast<uint8_t>(checksum), wire + 22);
+  RdmDiscoveryReceiver receiver;
+  uint8_t decoded[6] = {};
+  for (unsigned removed = 0; removed <= 7; ++removed) {
+    for (uint32_t spacing : {176u, 2800u}) {
+      receiver.begin(100);
+      receiver.onActivity(100 + spacing);
+      for (unsigned i = removed; i < 24; ++i)
+        receiver.onByte(wire[i], 100 + spacing + (i - removed + 1) * 44);
+      EXPECT_TRUE(!receiver.poll(5899));
+      EXPECT_TRUE(receiver.poll(5900));
+      EXPECT_EQ(receiver.result(decoded), RdmDiscoveryResult::SingleDevice);
+      EXPECT_EQ(Uid(decoded), target);
+    }
+  }
+  // GPIO/UART ISR timestamps are authoritative even if the foreground task
+  // is not scheduled until several milliseconds after the reply completes.
+  receiver.begin(100); receiver.onActivity(600);
+  for (unsigned i = 0; i < 24; ++i) receiver.onByte(wire[i], 600 + (i + 1) * 44);
+  EXPECT_TRUE(receiver.poll(9100));
+  EXPECT_EQ(receiver.timing().responseSpacingUs, 500);
+  EXPECT_EQ(receiver.result(decoded), RdmDiscoveryResult::SingleDevice);
+  receiver.begin(100);
+  EXPECT_TRUE(receiver.poll(5900));
+  EXPECT_EQ(receiver.result(decoded), RdmDiscoveryResult::None);
+  receiver.begin(100); receiver.onActivity(600); receiver.poll(5900);
+  EXPECT_EQ(receiver.result(decoded), RdmDiscoveryResult::CollisionOrMalformed);
+  for (uint32_t spacing : {175u, 2801u}) {
+    receiver.begin(100); receiver.onActivity(100 + spacing);
+    for (unsigned i = 0; i < 24; ++i) receiver.onByte(wire[i], 100 + spacing + (i + 1) * 44);
+    receiver.poll(5900);
+    EXPECT_EQ(receiver.result(decoded), RdmDiscoveryResult::CollisionOrMalformed);
+  }
+  receiver.begin(100); receiver.onActivity(600); receiver.onError(); receiver.poll(5900);
+  EXPECT_EQ(receiver.result(decoded), RdmDiscoveryResult::CollisionOrMalformed);
+  // Latest legal SOP + longest legal discovery packet: 5800-us request gap
+  // alone is not enough; preserve 176 us after the actual final response slot.
+  receiver.begin(100); receiver.onActivity(2900);
+  for (unsigned i = 0; i < 23; ++i) receiver.onByte(wire[i], 2900 + (i + 1) * 44);
+  receiver.onByte(wire[23], 5800);
+  EXPECT_TRUE(!receiver.poll(5900));
+  EXPECT_TRUE(!receiver.poll(5975));
+  EXPECT_TRUE(receiver.poll(5976));
+  EXPECT_EQ(receiver.result(decoded), RdmDiscoveryResult::SingleDevice);
+  receiver.begin(100); receiver.onActivity(2900);
+  for (unsigned i = 0; i < 23; ++i) receiver.onByte(wire[i], 2900 + (i + 1) * 44);
+  receiver.onByte(wire[23], 5801); receiver.poll(5977);
+  EXPECT_TRUE(receiver.failures() & kRdmPacketTimeExceeded);
+  const uint32_t wrapped = UINT32_MAX - 50;
+  receiver.begin(wrapped); receiver.onActivity(wrapped + 500);
+  for (unsigned i = 0; i < 24; ++i) receiver.onByte(wire[i], wrapped + 500 + (i + 1) * 44);
+  EXPECT_TRUE(receiver.poll(wrapped + 5800));
+  EXPECT_EQ(receiver.result(decoded), RdmDiscoveryResult::SingleDevice);
+  receiver.begin(100); receiver.onActivity(600);
+  for (unsigned i = 0; i < 1000; ++i) receiver.onByte(0xFE, 644 + i * 44);
+  EXPECT_EQ(receiver.length(), 32);
+  receiver.poll(45000);
+  EXPECT_TRUE(receiver.failures() & nocte::dmx::core::kRdmLengthMismatch);
+  // Deliberately clear a forced encoding bit, compensate the checksum so the
+  // decoded UID alone would still pass: malformed masks must still be rejected.
+  wire[8] &= static_cast<uint8_t>(~0x02);
+  const auto maskedChecksum = rdmChecksum(wire + 8, 12);
+  encodeDiscoveryByte(static_cast<uint8_t>(maskedChecksum >> 8), wire + 20);
+  encodeDiscoveryByte(static_cast<uint8_t>(maskedChecksum), wire + 22);
+  EXPECT_EQ(decodeRdmDiscoveryResponse(wire, 24, decoded), RdmDiscoveryResult::CollisionOrMalformed);
+  uint8_t control[34] = {};
+  control[RDM_IDX_CMD_CLASS] = RDM_DISC_COMMAND_RESPONSE;
+  for (uint8_t pdl : {uint8_t(2), uint8_t(8)}) {
+    control[RDM_IDX_PARAM_DATA_LEN] = pdl;
+    control[25] = 0x0F;
+    EXPECT_EQ(classifyRdmResponse(control, 26 + pdl).status, RdmCommandStatus::Ack);
+    control[25] = 0x10;
+    EXPECT_EQ(classifyRdmResponse(control, 26 + pdl).status, RdmCommandStatus::InvalidResponse);
+    control[25] = 0;
+  }
+  control[RDM_IDX_PARAM_DATA_LEN] = 0;
+  EXPECT_EQ(classifyRdmResponse(control, 26).status, RdmCommandStatus::InvalidResponse);
+  control[RDM_IDX_PARAM_DATA_LEN] = 2;
+  for (uint8_t type : {uint8_t(RDM_RESPONSE_TYPE_ACK_TIMER), uint8_t(RDM_RESPONSE_TYPE_ACK_OVERFLOW)}) {
+    control[RDM_IDX_RESPONSE_TYPE] = type;
+    EXPECT_EQ(classifyRdmResponse(control, 28).status, RdmCommandStatus::InvalidResponse);
+  }
+  control[RDM_IDX_RESPONSE_TYPE] = RDM_RESPONSE_TYPE_NACK_REASON;
+  control[25] = 1;
+  EXPECT_EQ(classifyRdmResponse(control, 28).status, RdmCommandStatus::Nack);
+  control[25] = 0;
+  EXPECT_EQ(classifyRdmResponse(control, 28).status, RdmCommandStatus::InvalidResponse);
+
+  struct FakeBus {
+    Uid uids[4] = {Uid(UINT64_C(1)), Uid(UINT64_C(2)),
+      Uid(UINT64_C(0x7FF052444D01)), Uid(UINT64_C(0xFFFFFFFFFFFE))};
+    bool muted[4] = {};
+    bool corrupt = false, failMute = false, endless = false, failBroadcast = false;
+    RdmCommandResult setRdmDiscoveryMute(const Uid& uid, bool mute) {
+      if (uid.isBroadcast()) {
+        for (auto& value : muted) value = mute;
+        return {failBroadcast ? RdmCommandStatus::InvalidResponse : RdmCommandStatus::Sent, 0, 0, 0};
+      }
+      for (unsigned i = 0; i < 4; ++i) if (uids[i] == uid && !failMute) {
+        muted[i] = mute; return {RdmCommandStatus::Ack, 2, 0, 0};
+      }
+      return {RdmCommandStatus::Timeout, 0, 0, 0};
+    }
+    RdmDiscoveryResult discoverRdmBranch(const Uid& low, const Uid& high, Uid* found) {
+      if (endless) return RdmDiscoveryResult::CollisionOrMalformed;
+      unsigned matches = 0;
+      for (unsigned i = 0; i < 4; ++i) if (!muted[i] && !(uids[i] < low) && !(high < uids[i])) {
+        ++matches; *found = uids[i];
+      }
+      return !matches ? RdmDiscoveryResult::None : matches == 1 && !corrupt
+        ? RdmDiscoveryResult::SingleDevice : RdmDiscoveryResult::CollisionOrMalformed;
+    }
+  } bus;
+  DeviceTable<4> devices;
+  auto scan = scanRdmDevices(bus, devices);
+  EXPECT_EQ(scan.status, RdmScanStatus::Complete);
+  EXPECT_EQ(devices.count(), 4);
+  for (const auto& uid : bus.uids) EXPECT_TRUE(devices.contains(uid));
+  // Always-bad discovery encoding still recovers each device at its exact leaf.
+  bus.corrupt = true;
+  scan = scanRdmDevices(bus, devices, 1024);
+  EXPECT_EQ(scan.status, RdmScanStatus::Complete);
+  EXPECT_EQ(devices.count(), 4);
+  bus.corrupt = false;
+  DeviceTable<1> small;
+  EXPECT_EQ(scanRdmDevices(bus, small).status, RdmScanStatus::CapacityExceeded);
+  bus.endless = true;
+  scan = scanRdmDevices(bus, devices, 120);
+  EXPECT_EQ(scan.status, RdmScanStatus::TransactionLimit);
+  EXPECT_EQ(scan.transactions, 120);
+  bus.endless = false; bus.failMute = true;
+  scan = scanRdmDevices(bus, devices, 1024);
+  EXPECT_EQ(scan.status, RdmScanStatus::Unresolved);
+  EXPECT_EQ(scan.unresolved, 4);
+  EXPECT_EQ(devices.count(), 0);
+  EXPECT_EQ(scanRdmDevices(bus, devices, 1).status, RdmScanStatus::InvalidArgument);
+  bus.failBroadcast = true;
+  EXPECT_EQ(scanRdmDevices(bus, devices).status, RdmScanStatus::TransportError);
 }
 
 void testUidAndDeviceTable() {
@@ -354,6 +512,12 @@ void testDmxReceiver() {
 void testRdmControllerCore() {
   using namespace nocte::dmx;
   using namespace nocte::dmx::core;
+  EXPECT_TRUE(qualifyUartLowPulse(176, 44, false, false)); // Leading physical BREAK.
+  EXPECT_TRUE(!qualifyUartLowPulse(46, 44, true, false)); // Jittered zero-byte pulse.
+  EXPECT_TRUE(!qualifyUartLowPulse(176, 44, true, false)); // Coalesced data edges.
+  EXPECT_TRUE(qualifyUartLowPulse(64, 44, true, true)); // Still validate/reject real short BREAK.
+  EXPECT_TRUE(qualifyUartLowPulse(176, 44, true, true));
+  EXPECT_TRUE(!qualifyUartLowPulse(36, 44, true, true));
   const Uid controller(UINT64_C(0x7FF000000002)), target(UINT64_C(0x7FF052444D01));
   uint8_t request[rdm::kMaximumFrameSize] = {};
   uint8_t response[rdm::kMaximumFrameSize] = {};
@@ -384,6 +548,11 @@ void testRdmControllerCore() {
   EXPECT_TRUE(receiver.poll(receiver.lastByteUs() + 2145));
   EXPECT_EQ(receiver.validate(request, requestLength), 0);
   EXPECT_EQ(classifyRdmResponse(receiver.data(), receiver.length()).status, RdmCommandStatus::Ack);
+  // The caller can resume late; never rebase request EOP to its wake-up time.
+  feed(100, 500);
+  EXPECT_TRUE(receiver.poll(9100));
+  EXPECT_EQ(receiver.timing().responseSpacingUs, 500);
+  EXPECT_EQ(receiver.validate(request, requestLength), 0);
   feed(UINT32_MAX - 100, 2800); // All timestamp arithmetic survives wraparound.
   receiver.poll(receiver.lastByteUs() + 2145);
   EXPECT_EQ(receiver.validate(request, requestLength), 0);
@@ -469,6 +638,7 @@ int main() {
   testRdmPacketConstruction();
   testRdmResponseValidation();
   testRdmDiscoveryDecoding();
+  testDiscoveryReceiverAndScan();
   testUidAndDeviceTable();
   testResponseCorrelationAndPayload();
   testPortStateIsolation();

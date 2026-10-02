@@ -24,9 +24,17 @@ microcontroller families.
 
 The first backend is the proven ESP8266 UART0 implementation used by the
 uNode project. An experimental ESP32-S3 UART backend now provides DMX input
-and output plus unicast RDM controller GET/SET, tested on UART1 with an RP2040
-fixture. Discovery/responder support on S3, full timing and electrical
+and output plus unicast RDM controller GET/SET, tested on UART1 and UART2 with an RP2040
+fixture. S3 discovery/Mute/Unmute and bounded full scans are direct-UART tested.
+Responder support, full timing and electrical
 qualification remain pending.
+
+Synthetic CPU/WLAN tests exposed an S3 controller TX-end timing issue, now
+hardened with interrupt-driven turnaround and corroborated BREAK detection.
+Retest results and an output-MAB anomaly investigated with independent PIO/DMA
+timing windows are recorded in the
+[validation notes](docs/esp32s3-rdm-validation.md). This is not full timing or
+electrical qualification.
 
 > [!IMPORTANT]
 > NocteDMX is currently an early development release. The ESP8266 backend is
@@ -131,7 +139,7 @@ void loop() {
 ### Bidirectional RDM
 
 ESP8266 provides the full current RDM API. ESP32-S3 provides the typed unicast
-controller GET/SET subset, without discovery or responder operation. Check
+controller GET/SET, discovery and Mute/Unmute, without responder operation. Check
 `Port::supportsRdmController`, `supportsRdmDiscovery` and `supportsRdmResponder`;
 the broader legacy `supportsRdm` remains false on S3 until the full surface exists.
 
@@ -187,7 +195,9 @@ NocteDMX is tested independently from any consuming firmware:
 - Arduino Lint checks library and release metadata;
 - every public example is compiled against ESP8266 Arduino Core 3.1.2;
 - DMX examples and S3 bench firmware are compiled against ESP32 Arduino Core
-  3.3.12. A successful build is not a hardware or timing qualification.
+  3.3.12. A successful build is not a hardware or timing qualification;
+- ELF guards check ESP8266 RDM timing helpers and S3 timing ISR placement and
+  resolved flash dependencies, including size-optimized compiler outlining.
 
 Run the portable tests locally with a CMake-compatible C++ compiler:
 
@@ -198,11 +208,15 @@ ctest --test-dir build --build-config Release --output-on-failure
 ```
 
 Hardware-in-the-loop tests are intentionally separate from CI. They require a
-real controller, RS-485 hardware, and the RP2040/RP2350 DMX test fixture.
+real controller and the RP2040/RP2350 DMX test fixture. Direct 3.3-V UART wiring
+tests protocol behavior; electrical qualification requires RS-485 hardware.
 The [standalone HIL runner](tests/hil/README.md) flashes focused test sketches
 and checks DMX output/input, RDM GET/SET/discovery, invalid responses, and
 recovery without the uNode application. These are regression smoke tests,
 not a complete standards-conformance certification.
+ESP8266 and S3 also have synthetic compute/AP-scan load tests and independent
+RP2040 PIO/DMA output-timing windows. These finite windows are not a continuous
+oscilloscope trace or a cache-off/NMI/physical-bus qualification.
 
 ## Architecture
 
@@ -238,7 +252,7 @@ For the detailed boundary and porting sequence, see
 | Target | Status | Notes |
 | --- | --- | --- |
 | ESP8266 | Supported | UART0 input/output and bidirectional RDM |
-| ESP32-S3 | Experimental, UART1 tested | DMX input/output, unicast RDM GET/SET; discovery, responder, UART2 and full qualification pending |
+| ESP32-S3 | Experimental, UART1/2 tested | DMX input/output, RDM GET/SET/discovery/Mute/Unmute; responder/multi-port/full qualification pending |
 | RP2040 / RP2350 | Roadmap | Suitable candidate for a PIO-based backend |
 | STM32 | Roadmap | Hardware-UART backend planned |
 | AVR | Exploratory | Subject to RAM and timer/UART constraints |
@@ -280,9 +294,15 @@ continues to build after each step.
 - [x] Add an experimental ESP32-S3 UART backend for DMX input/output
 - [x] Add standalone RP2040 HIL tests for the ESP8266 backend
 - [x] Validate S3 UART1 DMX input/output, fault recovery and lifecycle on direct UART
-- [ ] Validate the ESP32-S3 backend against the same HIL suite
+- [x] Repeat S3 DMX/RDM/discovery matrices on UART2 with unchanged TX17/RX18 wiring
+- [x] Validate S3 DMX/RDM/discovery fault recovery and synthetic load on direct UART
+- [x] Harden and retest ESP8266 RDM with IRQ/WLAN load and independent output timing
+- [ ] Qualify simultaneous S3 UART1 + UART2 operation on separate pins
 - [x] Add shared normal RDM capture and S3 unicast controller GET/SET
-- [ ] Add S3 discovery/Mute/Unmute and responder operation
+- [x] Add S3 discovery/Mute/Unmute and a bounded full-scan helper
+- [x] Validate S3 discovery/Mute/Unmute on the direct-UART bench
+- [ ] Qualify S3 RDM on RS485 under load
+- [ ] Add S3 responder operation
 
 ## ESP32-S3 UART bench
 

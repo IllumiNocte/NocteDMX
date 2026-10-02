@@ -39,6 +39,9 @@ controller must not require changes in application source files.
   bit, byte timestamps and hardware-error events. It has a fixed 257-byte
   buffer, bounded deadlines and wrap-safe timing checks. The S3 uses this
   adapter; ESP8266 receive/discovery scheduling has not yet migrated to it.
+- `RdmDiscoveryReceiver` handles BREAK-less discovery, GPIO-only collision
+  activity, encoding/timing errors and bounded capture. `RdmDiscovery.h` supplies
+  a portable fixed-stack full scan with explicit partial-result statuses.
 - `Uid` stores, compares, formats, and bisects six-byte identifiers without
   Arduino `String`, `Printable`, or heap allocation.
 - `DeviceTable<Capacity>` owns a bounded list of unique identifiers.
@@ -92,6 +95,18 @@ Application-specific PIDs must remain outside the PHY.
   GET:QUEUED_MESSAGE is the explicit PID-correlation exception: an ACK can
   carry the queued PID or STATUS_MESSAGES (E1.20-2025 section 10.3.1).
 
+ESP8266 controller transmission keeps packet FIFO feeding/draining interruptible
+but protects two short IRAM windows: BREAK/MAB/first-byte enqueue and the reserved
+last-byte FIFO-to-shifter observation plus RX/direction handoff. The latter still
+estimates EOP from the final 44-us slot; ESP8266 does not use the S3 TX_DONE path.
+RX stale data is cleared before receiving is armed and direction is released.
+The 35-ms bulk FIFO and 120-us tail wait deadlines increment the public
+`rdmTransmitTimeoutCount()`; normal controller calls return an invalid response,
+and discovery returns partial rather than pretending no device exists. Legacy
+frame-boundary pause/resume waits and the continuous DMX/responder interrupt
+scheduler remain unchanged. Forced-inline PS save/restore avoids the core's
+size-optimized flash-resident interrupt-lock destructor; CI checks the built ELF.
+
 The experimental ESP32-S3 backend owns UART1/2 and its GPIOs exclusively between
 NocteDMX instances. It rejects a UART already occupied by the IDF driver;
 applications must not start another UART driver on that resource afterwards.
@@ -102,17 +117,27 @@ the steady-state data path does not allocate. RX assembly uses `DmxReceiver`.
 RDM GET/SET pauses the same output task at a complete DMX frame boundary, runs
 one bounded half-duplex transaction, and resumes output without task allocation.
 The caller waits for the previous pause acknowledgement to clear before another
-command can begin. TX completion busy-polls the actual UART FSM before releasing
-DE; direct UART functional tests do not qualify physical DE//RE timing.
+command can begin. RDM TX completion uses an IRAM UART TX_DONE handler to confirm
+FIFO/FSM idle, timestamp EOP, arm capture and release DE before waking the caller.
+BREAK/MAB generation has a bounded critical section; packet data/refill does not.
+Word-sized atomic flags avoid outlined flash-resident boolean loads on Xtensa.
+Direct UART functional tests do not qualify physical DE//RE timing or cache-off
+GPIO dispatch through the Arduino core.
 See [the S3 guide](esp32s3.md) for restrictions and pending hardware validation.
 
-Next, add discovery/Mute/Unmute and migrate more sequencing against this real
+Discovery/Mute/Unmute now shares the S3 frame-boundary transaction path. A
+separate portable fixed discovery receiver handles the BREAK-less wire format,
+including GPIO-only collision activity. `RdmDiscovery.h` supplies bounded full
+discovery with a fixed range stack, transaction budget and explicit partial
+results. Its UART1/2 direct-UART matrices pass; synthetic CPU/AP-scan load has
+driven TX-end and GPIO BREAK hardening. Next, qualify RS485 and worst-case behaviour
+and migrate more sequencing against this real
 second backend without duplicating the ESP8266 register scheduler or inventing
 unused virtual interfaces. Native core tests and the [standalone HIL suite](../tests/hil/README.md)
 remain the regression boundary; precise timing qualification is a separate
-hardware exercise. S3 UART1 DMX has passed direct-UART smoke tests;
+hardware exercise. S3 UART1/2 DMX has passed direct-UART smoke tests;
 S3 typed GET/SET and malformed-response recovery have direct-UART coverage;
-full qualification, UART2, S3 discovery and responder operation remain pending.
+full qualification, simultaneous multi-port use and responder operation remain pending.
 
 ## Migration stages
 
@@ -126,9 +151,9 @@ full qualification, UART2, S3 discovery and responder operation remain pending.
 3. Replace global-only assumptions with constructible ports. (Implemented
    for ESP8266 with exclusive UART0 ownership and per-instance UID support.)
 4. Add the ESP32-S3 UART backend and validate it with the RP2040 HIL tester.
-   (Experimental DMX backend added and UART1 direct-UART smoke tests passed;
-   shared normal RDM capture and controller GET/SET added; discovery, responder
-   operation and full qualification still pending.)
+   (Experimental DMX backend added and UART1/2 direct-UART smoke tests passed;
+   shared normal RDM capture and controller GET/SET added; discovery implemented
+   with native and direct-UART HIL tests; responder and full qualification pending.)
 5. Add optional PIO/DMA or vendor-specific backends behind the same facade.
 
 Every stage must keep the ESP8266 firmware compiling and retain the legacy

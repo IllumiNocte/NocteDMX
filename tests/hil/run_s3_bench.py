@@ -10,6 +10,28 @@ import serial
 from run_smoke import Fixture, build_and_flash, require
 
 
+def verify_uart(bench, uart):
+    status = bench.command("status")
+    require(status.get("uart") == uart,
+            "Bench UART mismatch: expected UART%d, got %r; reflash with --uart %d"
+            % (uart, status.get("uart"), uart))
+    return status
+
+
+def uart_report_path(default, uart):
+    path = Path(default)
+    return str(path.with_name(path.stem + "-uart2" + path.suffix)) if uart == 2 else str(path)
+
+
+def heap_tolerance(report):
+    # Unloaded matrices keep their tight 128-byte check. WLAN scans allocate
+    # temporary results asynchronously; the load harness separately checks
+    # quiescent heap after shutting WLAN off against the original baseline.
+    value = report.get("transientHeapTolerance", 128)
+    require(isinstance(value, int) and 128 <= value <= 8192, "Invalid transient heap tolerance")
+    return value
+
+
 class Bench:
     def __init__(self, port):
         self.serial = serial.Serial(port, 115200, timeout=0.2, write_timeout=3)
@@ -18,7 +40,7 @@ class Bench:
         time.sleep(0.5)
         self.command("quiet")
 
-    def command(self, text, kind="status"):
+    def command(self, text, kind="status", timeout=5):
         self.serial.reset_input_buffer()
         payload = text.encode("ascii") + b"\n"
         # USB CDC/JTAG RX buffering can be smaller than a maximum RDM SET
@@ -28,7 +50,7 @@ class Bench:
             if len(payload) > 48:
                 time.sleep(0.005)
         self.serial.flush()
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             line = self.serial.readline().strip()
             if not line.startswith(b"{"):
@@ -165,7 +187,7 @@ def run_cases(fixture, bench, report, skip_start_code=False):
         cycle()
     time.sleep(0.2)
     final = bench.command("status")
-    require(final["freeHeap"] >= baseline["freeHeap"] - 128,
+    require(final["freeHeap"] >= baseline["freeHeap"] - heap_tolerance(report),
             "Stopped-state heap fell across lifecycle cycles")
     require(final["txTimeouts"] == 0, "TX timed out during lifecycle cycles")
     record("lifecycle_100_cycles", {"baseline": baseline, "final": final})
@@ -180,17 +202,20 @@ def main():
     parser.add_argument("--fixture-port", required=True)
     parser.add_argument("--arduino-cli", default="arduino-cli")
     parser.add_argument("--esptool-executable")
-    parser.add_argument("--report", default="build/hil/s3-bench-report.json")
+    parser.add_argument("--uart", type=int, choices=(1, 2), default=1,
+                        help="S3 UART peripheral; TX17/RX18 wiring stays unchanged")
+    parser.add_argument("--report")
     parser.add_argument("--no-flash", action="store_true", help="Use an already flashed bench sketch")
     parser.add_argument("--skip-start-code", action="store_true", help="Explicit skip for unmodified tester 0.4.14")
     args = parser.parse_args()
+    args.report = args.report or uart_report_path("build/hil/s3-bench-report.json", args.uart)
     if args.esp_port.lower() == args.fixture_port.lower():
         parser.error("S3 and fixture ports must differ")
     args.chip, args.direction_pin = "esp32s3", 255
     args.fqbn = "esp32:esp32:esp32s3:CDCOnBoot=cdc"
     args.esptool_script = args.serial_module_path = None
     report = {"time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-              "chip": args.chip, "tests": {}, "ok": False}
+              "chip": args.chip, "uart": args.uart, "tests": {}, "ok": False}
     fixture = bench = None
     try:
         fixture = Fixture(args.fixture_port)
@@ -199,6 +224,7 @@ def main():
         if not args.no_flash:
             build_and_flash(args, fixture, "extras/hil/Esp32S3UartBench")
         bench = Bench(args.esp_port)
+        report["bench"] = verify_uart(bench, args.uart)
         run_cases(fixture, bench, report, args.skip_start_code)
         report["ok"] = True
     except Exception as error:

@@ -45,6 +45,7 @@ enum class RdmDiscoveryResult : uint8_t {
 
 enum class RdmCommandStatus : uint8_t {
   Ack, Nack, Deferred, Overflow, Timeout, InvalidResponse, InvalidArgument,
+  Sent, // Broadcast transmitted; never implies an ACK from a responder.
 };
 
 struct RdmCommandResult {

@@ -123,6 +123,38 @@ class RdmRunnerDryTests(unittest.TestCase):
         self.assertTrue(all(len(chunk) <= 48 for chunk in writes))
         self.assertEqual(sleep.call_count, len(writes))
 
+    def test_uart2_status_is_confirmed(self):
+        bench = mock.Mock()
+        bench.command.return_value = {"uart": 2, "error": 0}
+        self.assertEqual(self.runner.verify_uart(bench, 2)["uart"], 2)
+        bench.command.assert_called_once_with("status")
+
+    def test_uart_mismatch_and_old_firmware_are_rejected(self):
+        for reply in ({"uart": 1}, {}):
+            with self.subTest(reply=reply):
+                bench = mock.Mock()
+                bench.command.return_value = reply
+                with self.assertRaisesRegex(AssertionError, "reflash"):
+                    self.runner.verify_uart(bench, 2)
+
+    def test_uart_report_paths_do_not_overwrite_uart1(self):
+        self.assertEqual(self.runner.uart_report_path("build/report.json", 1), str(Path("build/report.json")))
+        self.assertEqual(self.runner.uart_report_path("build/report.json", 2), str(Path("build/report-uart2.json")))
+
+    def test_unsupported_uart_rejected_before_hardware(self):
+        with mock.patch("sys.argv", ["runner", "--esp-port", "COM6", "--fixture-port", "COM3", "--uart", "3"]), \
+                mock.patch.object(self.runner, "Fixture") as fixture, mock.patch("sys.stderr"):
+            with self.assertRaises(SystemExit):
+                self.runner.main()
+            fixture.assert_not_called()
+
+    def test_heap_tolerance_is_tight_by_default_and_bounded_for_wifi(self):
+        self.assertEqual(self.runner.heap_tolerance({}), 128)
+        self.assertEqual(self.runner.heap_tolerance({"transientHeapTolerance": 8192}), 8192)
+        for value in (0, 127, 8193, "8192"):
+            with self.subTest(value=value), self.assertRaisesRegex(AssertionError, "heap tolerance"):
+                self.runner.heap_tolerance({"transientHeapTolerance": value})
+
 
 if __name__ == "__main__":
     unittest.main()
