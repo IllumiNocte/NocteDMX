@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include <rdm/rdm_utility.h>
+#include "Uid.h"
 
 namespace nocte {
 namespace dmx {
@@ -10,6 +11,19 @@ namespace core {
 
 uint16_t rdmWireLength(uint8_t messageLength) {
   return static_cast<uint16_t>(messageLength) + rdm::kChecksumSize;
+}
+
+bool isRdmControllerRequest(const uint8_t* packet, uint16_t length) {
+  if (!packet || length < RDM_PKT_BASE_TOTAL_LEN || length > rdm::kMaximumFrameSize
+      || packet[0] != RDM_START_CODE || packet[1] != RDM_SUB_START_CODE
+      || packet[2] < RDM_PKT_BASE_MSG_LEN || rdmWireLength(packet[2]) != length
+      || packet[RDM_IDX_PARAM_DATA_LEN] != packet[2] - RDM_PKT_BASE_MSG_LEN
+      || packet[RDM_IDX_PORT] == 0 || packet[RDM_IDX_MSG_COUNT] != 0
+      || Uid(packet + RDM_IDX_SOURCE_UID).isBroadcast()
+      || !validateRDMPacket(packet)) return false;
+  const uint8_t command = packet[RDM_IDX_CMD_CLASS];
+  return command == RDM_SET_COMMAND || (command == RDM_GET_COMMAND
+      && !Uid(packet + RDM_IDX_DESTINATION_UID).isBroadcast());
 }
 
 uint16_t buildRdmRequest(uint8_t* packet, const uint8_t* sourceUid,
@@ -43,6 +57,7 @@ RdmCommandResult classifyRdmResponse(const uint8_t* response, uint16_t length,
       if (pdl == 2) status = RdmCommandStatus::Nack;
       break;
     case RDM_RESPONSE_TYPE_ACK_TIMER:
+    case RDM_RESPONSE_TYPE_ACK_TIMER_HI_RES:
       if (pdl == 2) status = RdmCommandStatus::Deferred;
       break;
     case RDM_RESPONSE_TYPE_ACK_OVERFLOW: status = RdmCommandStatus::Overflow; break;

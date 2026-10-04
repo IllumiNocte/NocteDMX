@@ -429,6 +429,15 @@ core::RdmCommandResult Esp32S3UartPort::transactRdm(uint16_t length, RdmTransact
   return result;
 }
 
+core::RdmCommandResult Esp32S3UartPort::transactRawRdm(const uint8_t* request, uint16_t length) {
+  using namespace core;
+  if (!isActive() || !rdmEnabled_ || receiving_ || !isRdmControllerRequest(request, length))
+    return {RdmCommandStatus::InvalidArgument, 0, 0, 0};
+  memcpy(rdmRequest_, request, length);
+  const bool broadcast = Uid(request + RDM_IDX_DESTINATION_UID).isBroadcast();
+  return transactRdm(length, broadcast ? RdmTransaction::Broadcast : RdmTransaction::Normal);
+}
+
 core::RdmCommandResult Esp32S3UartPort::getRdmParameter(const core::Uid& target,
     uint16_t pid, uint8_t* destination, uint16_t capacity, const uint8_t* requestData,
     uint16_t requestLength, uint16_t subDevice) {

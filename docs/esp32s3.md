@@ -4,6 +4,12 @@ This is an **experimental, UART1/2-tested DMX input/output and RDM controller ba
 The [first hardware validation](esp32s3-validation.md) covers 15 cases with
 direct UART. It is not a standards-conformance or electrical qualification.
 Typed unicast RDM GET/SET is available (`supportsRdmController == true`).
+`transactRawRdm()` additionally sends validated, complete non-discovery GET/SET
+requests without replacing external controller UID, transaction number, port,
+or sub-device. Broadcast SET is a no-response transaction (`Sent`). The caller
+must read/copy any raw response before issuing another transaction; calls are
+serialized by the foreground owner as with the typed API. Native tests and
+uNode dry builds cover this gateway seam; its live RS485 qualification is pending.
 Discovery/Mute/Unmute is implemented (`supportsRdmDiscovery == true`), with
 native and UART1/2 direct-UART coverage. Full qualification and responder operation
 is not yet available; `supportsRdm` remains

@@ -139,7 +139,13 @@ void loop() {
 ### Bidirectional RDM
 
 ESP8266 provides the full current RDM API. ESP32-S3 provides the typed unicast
-controller GET/SET, discovery and Mute/Unmute, without responder operation. Check
+controller GET/SET, discovery and Mute/Unmute, without responder operation. It
+also exposes `transactRawRdm(request, length)` for non-discovery GET/SET gateways:
+the complete checksummed controller request is preserved, responses use the
+same physical validation/correlation, and broadcast SET returns `Sent` without
+an ACK. Call `copyRdmResponse()` before the next transaction to retain the raw
+reply. Native request validation and firmware build checks are covered; raw
+gateway hardware qualification is still pending. Check
 `Port::supportsRdmController`, `supportsRdmDiscovery` and `supportsRdmResponder`;
 the broader legacy `supportsRdm` remains false on S3 until the full surface exists.
 

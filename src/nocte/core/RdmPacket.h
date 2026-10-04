@@ -58,6 +58,10 @@ struct RdmCommandResult {
 
 uint16_t rdmWireLength(uint8_t messageLength);
 
+// Raw non-discovery controller request for a gateway. Includes checksum;
+// rejects broadcast GET and invalid controller identities before touching PHY.
+bool isRdmControllerRequest(const uint8_t* packet, uint16_t length);
+
 // Returns zero for invalid arguments. Includes checksum; no heap allocation.
 uint16_t buildRdmRequest(uint8_t* packet, const uint8_t* sourceUid,
     const uint8_t* destinationUid, uint8_t transaction, uint8_t commandClass,

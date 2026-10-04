@@ -58,6 +58,9 @@ class Esp32S3UartPort {
       const core::Uid& upper, core::Uid* discovered);
   core::RdmCommandResult setRdmDiscoveryMute(const core::Uid& target, bool mute);
   uint16_t copyRdmResponse(uint8_t* destination, uint16_t capacity) const;
+  // Gateway transaction: preserve the external UID, transaction, port and
+  // sub-device exactly. Broadcast SET returns Sent, never a fabricated ACK.
+  core::RdmCommandResult transactRawRdm(const uint8_t* request, uint16_t length);
   core::RdmReceiveTiming rdmReceiveTiming() const {
     return discoveryCapture_.load() ? discoveryReceiver_.timing() : rdmReceiver_.timing();
   }

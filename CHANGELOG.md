@@ -2,6 +2,13 @@
 
 ## 0.1.0 - Unreleased
 
+- Added validated S3 `transactRawRdm()` gateway transactions preserving the
+  external controller UID, transaction number, port and sub-device. Broadcast
+  SET returns `Sent` without a fabricated ACK; discovery uses the existing
+  dedicated API. Native regressions reject malformed envelopes, checksums,
+  broadcast GET and invalid controller identity. ACK_TIMER_HI_RES is classified
+  as a deferred reply with its required two-byte payload. Hardware gateway
+  qualification remains pending.
 - Hardened ESP8266 controller BREAK/MAB and reserved-final-byte/RX handoff in
   short IRAM windows with forced-inline PS restoration. Bulk FIFO work remains
   interruptible, with explicit timeout/recovery counters and partial-discovery

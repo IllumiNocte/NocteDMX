@@ -630,6 +630,57 @@ void testRdmControllerCore() {
   EXPECT_TRUE(!receiver.poll(3340));
 }
 
+void testRawGatewayRequests() {
+  using namespace nocte::dmx;
+  using namespace core;
+  Uid source(UINT64_C(0x123456789ABC)), target(UINT64_C(0x432112345678));
+  uint8_t packet[rdm::kMaximumFrameSize] = {};
+  uint8_t payload[231];
+  memset(payload, 0xFF, sizeof(payload));
+  const uint16_t length = buildRdmRequest(packet, source.data(), target.data(), 0xFA,
+      RDM_SET_COMMAND, 0x8001, payload, sizeof(payload), 0x1234);
+  packet[RDM_IDX_PORT] = 7;
+  appendRdmChecksum(packet);
+  EXPECT_EQ(length, 257);
+  EXPECT_TRUE(isRdmControllerRequest(packet, length));
+  EXPECT_EQ(packet[RDM_IDX_TRANSACTION_NUM], 0xFA);
+  EXPECT_EQ(packet[RDM_IDX_PORT], 7);
+  EXPECT_TRUE(!isRdmControllerRequest(nullptr, length));
+  EXPECT_TRUE(!isRdmControllerRequest(packet, length - 1));
+  packet[256] ^= 1;
+  EXPECT_TRUE(!isRdmControllerRequest(packet, length));
+  appendRdmChecksum(packet);
+  memset(packet + RDM_IDX_DESTINATION_UID, 0xFF, 6);
+  appendRdmChecksum(packet);
+  EXPECT_TRUE(isRdmControllerRequest(packet, length)); // Broadcast SET.
+  packet[RDM_IDX_CMD_CLASS] = RDM_GET_COMMAND;
+  appendRdmChecksum(packet);
+  EXPECT_TRUE(!isRdmControllerRequest(packet, length)); // Never broadcast GET.
+  packet[RDM_IDX_CMD_CLASS] = RDM_DISCOVERY_COMMAND;
+  appendRdmChecksum(packet);
+  EXPECT_TRUE(!isRdmControllerRequest(packet, length)); // Use discovery API.
+  packet[RDM_IDX_CMD_CLASS] = RDM_SET_COMMAND;
+  packet[RDM_IDX_PORT] = 0;
+  appendRdmChecksum(packet);
+  EXPECT_TRUE(!isRdmControllerRequest(packet, length));
+  packet[RDM_IDX_PORT] = 7;
+  packet[RDM_IDX_MSG_COUNT] = 1;
+  appendRdmChecksum(packet);
+  EXPECT_TRUE(!isRdmControllerRequest(packet, length));
+  packet[RDM_IDX_MSG_COUNT] = 0;
+  memset(packet + RDM_IDX_SOURCE_UID, 0xFF, 6);
+  appendRdmChecksum(packet);
+  EXPECT_TRUE(!isRdmControllerRequest(packet, length));
+
+  uint8_t response[28] = {};
+  initializeRdmResponderHeader(response, 26, target.data(), 0xFA,
+      RDM_RESPONSE_TYPE_ACK_TIMER_HI_RES, 0, 0);
+  setRdmParameterHeader(response, RDM_GET_COMMAND_RESPONSE, RDM_DEVICE_INFO, 2);
+  EXPECT_EQ(classifyRdmResponse(response, sizeof(response)).status, RdmCommandStatus::Deferred);
+  response[23] = 1;
+  EXPECT_EQ(classifyRdmResponse(response, sizeof(response)).status, RdmCommandStatus::InvalidResponse);
+}
+
 }  // namespace
 
 int main() {
@@ -644,6 +695,7 @@ int main() {
   testPortStateIsolation();
   testDmxReceiver();
   testRdmControllerCore();
+  testRawGatewayRequests();
 
   if (failures != 0) {
     std::cerr << failures << " NocteDMX core assertion(s) failed\n";
