@@ -225,6 +225,26 @@ FIFO feed/drain timeouts increment `rdmTransmitTimeoutCount()` and report a
 receive error (or partial discovery), with RX rearmed before IRQs are restored.
 The legacy frame-boundary pause/resume loops are not covered by that timeout.
 
+The ESP8266 foreground `setTaskReceive()` handoff masks and acknowledges
+TX-empty before publishing RECEIVE, with an interrupt lock protecting receive
+state reset and direction release. Publishing RECEIVE while the level-triggered
+empty-FIFO interrupt was still enabled could cause an interrupt storm: the ISR
+would skip filling the FIFO and immediately retrigger before foreground could
+disable it. Host tests guard publication order and model this unsafe
+interleaving; they do not simulate the complete UART or prove all watchdog
+causes absent.
+
+On 2026-10-07 the patched backend passed a direct-UART integration test using
+RP2040 tester 0.4.20: six 30-second phases covering Art-Net/sACN output, DMX input
+forwarding through either protocol, valid RDM and two-worker HTTP load with
+five independent zero-DMX PIO/DMA windows. A separate 300-second DEVICE_INFO
+run passed another 135 cycles (149 total), with no restart and verified runtime
+and persistent configuration restoration. The native core suite, 56 host cases
+and six-routine ESP8266 IRAM guard also passed. The application used ordinary
+external Wi-Fi UDP and HTTP traffic; this is finite integrated regression
+evidence, not continuous worst-case timing, electrical RS485, malformed-RDM
+qualification or a long-term soak.
+
 `check_s3_iram.py --chip esp8266` also checks six ESP8266 helper/core functions
 in the actual ELF. A forced-inline interrupt lock avoids a size-optimized core
 destructor being placed in flash. The guard checks direct/literal-resolved
