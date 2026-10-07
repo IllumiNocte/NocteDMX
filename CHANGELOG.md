@@ -2,6 +2,17 @@
 
 ## 0.1.0 - Unreleased
 
+- Make the ESP8266 receive handoff atomic and mask/acknowledge TX-empty before
+  publishing RECEIVE. A pending level-triggered TX-empty interrupt could
+  otherwise repeatedly enter an ISR which skips TX in RECEIVE, starving the
+  foreground mask operation and triggering the hardware watchdog. Packet
+  timings, IRQ priority and wire-format validation are unchanged.
+- Receive-handoff regressions pass the native core suite, 56 host cases and
+  the six-routine ESP8266 ELF IRAM guard. Direct-UART integration passed all
+  six 30-second data/RDM/HTTP phases and a separate 300-second DEVICE_INFO run:
+  149 valid RDM cycles, no restart, verified runtime/configuration restoration.
+  Malformed RDM, electrical RS485 and long-term soak qualification remain open.
+
 - Added validated S3 `transactRawRdm()` gateway transactions preserving the
   external controller UID, transaction number, port and sub-device. Broadcast
   SET returns `Sent` without a fabricated ACK; discovery uses the existing

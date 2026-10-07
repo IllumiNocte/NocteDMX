@@ -1078,13 +1078,19 @@ IRAM_ATTR void LX8266DMX::restoreTaskSendDMX( void ) {		// only valid if connect
 }
 
 void LX8266DMX::setTaskReceive( void ) {		// only valid if connection started using startRDM()
+	esp8266::InterruptLock lock;
 	if (_interrupt_status != ISR_RDM_ENABLED) return;
+	// Mask TX-empty BEFORE publishing RECEIVE. Otherwise a pending level
+	// interrupt can see RECEIVE while TX-empty is still enabled, skip feeding
+	// the FIFO, and immediately retrigger forever, starving the foreground
+	// instruction which would have masked it. Keep the RX reset coherent too.
+	USIE(UART0) &= ~(1 << UIFE);
+	USIC(UART0) = (1 << UIFE);
 	_frames.receivedLength = 0;
 	_frames.expectedLength = DMX_MAX_FRAME;
     _dmx_send_state = DMX_STATE_IDLE;
     _rdm_task_mode = DMX_TASK_RECEIVE;
     _rdm.handled = 0;
-    USIE(UART0) &= ~(1 << UIFE);				// uart_disable_tx_interrupt();
     setTransceiverReceive();
 }
 
